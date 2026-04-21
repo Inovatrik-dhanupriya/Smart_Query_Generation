@@ -7,11 +7,13 @@ Run:
 """
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import bcrypt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
@@ -56,6 +58,7 @@ from sql_engine import (
     execute_sql_page,
     validate_sql,
 )
+from db import ensure_auth_tables, ensure_userdetails_database, get_app_db_cursor
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -140,6 +143,21 @@ app_state: dict = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ensure app-level auth/project database exists (separate from DB_NAME / medicine).
+    try:
+        created = ensure_userdetails_database()
+        if created:
+            log.info("App-level database created successfully.")
+        else:
+            log.info("App-level database already present.")
+        ensure_auth_tables()
+        log.info("Auth schema is ready in app-level database.")
+    except Exception as e:
+        log.warning(
+            "Could not ensure app-level database/auth schema: %s. "
+            "Continuing with the main NL→SQL database startup.",
+            e,
+        )
     log.info("Extracting schema from database …")
     schema, _repair = _extract_schema_with_reader_repair()
     descriptions  = schema_to_text(schema)
@@ -417,6 +435,93 @@ class SyncRequest(BaseModel):
         return v
 
 
+class SignUpRequest(BaseModel):
+    email: str
+    company_name: str
+    username: str
+    password: str
+    confirm_password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Email is required.")
+        if not re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", v):
+            raise ValueError("Please enter a valid email address.")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^[A-Za-z0-9_]{3,32}$", v):
+            raise ValueError(
+                "Username must be 3-32 characters and contain only letters, numbers, or underscores."
+            )
+        return v
+
+    @field_validator("company_name")
+    @classmethod
+    def validate_company_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Company name is required.")
+        if len(v) > 255:
+            raise ValueError("Company name is too long (max 255 characters).")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters.")
+        return v
+
+    @field_validator("confirm_password")
+    @classmethod
+    def validate_confirm_password(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Confirm password is required.")
+        return v
+
+
+class SignUpResponse(BaseModel):
+    ok: bool
+    message: str
+    user_id: Optional[int] = None
+
+
+class SignInRequest(BaseModel):
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Username is required.")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Password is required.")
+        return v
+
+
+class SignInResponse(BaseModel):
+    ok: bool
+    message: str
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    company_name: Optional[str] = None
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -507,6 +612,97 @@ def suggest_prompts_endpoint(request: Request, last_query: str = ""):
     table_catalog = app_state.get("table_catalog", "")
     prompts = suggest_prompts(table_catalog, last_query)
     return {"prompts": prompts}
+
+
+@app.post("/api/platform/auth/signup", response_model=SignUpResponse)
+@limiter.limit("20/minute")
+def signup_endpoint(request: Request, req: SignUpRequest):
+    if req.password != req.confirm_password:
+        raise HTTPException(status_code=400, detail="Confirm password does not match.")
+
+    try:
+        with get_app_db_cursor(dict_cursor=True) as cur:
+            cur.execute(
+                "SELECT id FROM public.auth_users WHERE LOWER(email) = LOWER(%s) LIMIT 1",
+                (req.email,),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="Email is already registered.")
+
+            cur.execute(
+                "SELECT id FROM public.auth_users WHERE LOWER(username) = LOWER(%s) LIMIT 1",
+                (req.username,),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="Username is already taken.")
+
+            password_hash = bcrypt.hashpw(
+                req.password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
+
+            cur.execute(
+                """
+                INSERT INTO public.auth_users (email, company_name, username, password_hash)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (req.email, req.company_name, req.username, password_hash),
+            )
+            row = cur.fetchone()
+            user_id = int(row["id"]) if row else None
+
+        return SignUpResponse(ok=True, message="Account created successfully.", user_id=user_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("Signup failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not create account.")
+
+
+@app.post("/api/platform/auth/signin", response_model=SignInResponse)
+@limiter.limit("30/minute")
+def signin_endpoint(request: Request, req: SignInRequest):
+    try:
+        with get_app_db_cursor(dict_cursor=True) as cur:
+            cur.execute(
+                """
+                SELECT id, username, email, company_name, password_hash, is_active
+                FROM public.auth_users
+                WHERE LOWER(username) = LOWER(%s)
+                LIMIT 1
+                """,
+                (req.username,),
+            )
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+            if not user.get("is_active", True):
+                raise HTTPException(status_code=403, detail="This account is inactive.")
+
+            stored_hash = str(user.get("password_hash") or "")
+            ok = bcrypt.checkpw(req.password.encode("utf-8"), stored_hash.encode("utf-8"))
+            if not ok:
+                raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+            cur.execute(
+                "UPDATE public.auth_users SET last_login_at = NOW() WHERE id = %s",
+                (user["id"],),
+            )
+
+        return SignInResponse(
+            ok=True,
+            message="Signed in successfully.",
+            user_id=int(user["id"]),
+            username=str(user["username"]),
+            email=str(user["email"]),
+            company_name=str(user.get("company_name") or ""),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("Signin failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not sign in.")
 
 
 @app.post("/generate-sql", response_model=QueryResponse)

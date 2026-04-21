@@ -41,6 +41,13 @@ st.set_page_config(
     layout="wide",
 )
 
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+if not st.session_state.auth_user:
+    st.switch_page("pages/signin.py")
+    st.stop()
+
 # ── Session state ─────────────────────────────────────────────────────────────
 if "session_id"  not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -71,6 +78,13 @@ for _k, _v in _SYNC_DEFAULTS.items():
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("⚙️ Settings")
+    _auth = st.session_state.auth_user or {}
+    st.caption(f"Signed in as `{_auth.get('username', 'user')}`")
+    if st.button("🚪 Sign Out", use_container_width=True):
+        st.session_state.auth_user = None
+        st.switch_page("pages/signin.py")
+        st.stop()
+    st.divider()
     top_k     = st.slider("Tables to retrieve (top-K)", 1, 10, 3)
     row_limit = st.select_slider(
         "Rows per page  (used only when your question has no explicit number)",
