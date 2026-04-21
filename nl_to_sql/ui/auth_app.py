@@ -48,7 +48,7 @@ def _go_sign_up() -> None:
 
 
 def _go_main() -> None:
-    st.switch_page("streamlit_app.py")
+    st.switch_page("pages/dashboard.py")
 
 
 st.title("Smart Query Generation")

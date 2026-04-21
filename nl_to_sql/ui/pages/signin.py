@@ -22,7 +22,7 @@ st.set_page_config(page_title="Sign In", page_icon="🔐", layout="wide")
 apply_shared_theme()
 
 if st.session_state.get("auth_user"):
-    st.switch_page("streamlit_app.py")
+    st.switch_page("pages/dashboard.py")
 
 with st.sidebar:
     st.page_link("pages/signup.py", label="Go to Sign Up", icon="📝")
@@ -33,7 +33,7 @@ def _to_sign_up() -> None:
 
 
 def _to_main() -> None:
-    st.switch_page("streamlit_app.py")
+    st.switch_page("pages/dashboard.py")
 
 
 render_sign_in_page(go_to_sign_up=_to_sign_up, go_to_main=_to_main)

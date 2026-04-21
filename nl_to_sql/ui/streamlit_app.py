@@ -80,6 +80,7 @@ with st.sidebar:
     st.title("⚙️ Settings")
     _auth = st.session_state.auth_user or {}
     st.caption(f"Signed in as `{_auth.get('username', 'user')}`")
+    st.page_link("pages/dashboard.py", label="Tenant Dashboard", icon="🏠")
     if st.button("🚪 Sign Out", use_container_width=True):
         st.session_state.auth_user = None
         st.switch_page("pages/signin.py")
