@@ -100,9 +100,8 @@ def default_sync_row_limit() -> int:
 
 
 def db_sync_schema_default() -> str:
-    """PostgreSQL schema used for sync/import targets (UI hint + API defaults)."""
-    s = (os.getenv("DB_SYNC_SCHEMA", "public") or "public").strip()
-    return s or "public"
+    """Legacy hook — sync target schema comes from the Streamlit UI, not from here."""
+    return (os.getenv("DB_SYNC_SCHEMA") or "").strip()
 
 
 def cors_origins() -> list[str]:
