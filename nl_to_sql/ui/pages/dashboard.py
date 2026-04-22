@@ -15,8 +15,10 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from ui.tenant.dashboard import render_tenant_dashboard
+from ui.theme import apply_shared_theme
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide")
+apply_shared_theme()
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None

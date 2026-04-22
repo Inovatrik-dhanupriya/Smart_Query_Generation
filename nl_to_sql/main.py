@@ -36,6 +36,7 @@ from google.genai import errors as genai_errors
 from utils.config import (
     agent_table_threshold,
     cors_origins,
+    db_sync_schema_default,
     llm_cache_max_entries,
     session_max_age_hours,
     session_max_turns,
@@ -106,6 +107,9 @@ def _check_env() -> None:
 
 
 _check_env()
+
+# ── App-level FastAPI state (used by startup/lifespan) ───────────────────────
+app_state: dict = {}
 
 # ── Per-session NL→SQL state (key = client session_id from UI) ───────────────
 nl_sessions: dict[str, dict[str, Any]] = {}
@@ -412,6 +416,44 @@ def _rebuild_nl_state(sid: str, schema: dict) -> None:
     sess["descriptions"] = descriptions
     sess["table_catalog"] = table_catalog
     sess["retriever"] = retriever
+
+
+def get_sync_target_schema() -> str:
+    """Compatibility helper used by startup hints."""
+    return db_sync_schema_default() or "public"
+
+
+def _extract_schema_with_reader_repair() -> tuple[dict, dict]:
+    """
+    Startup schema extraction helper.
+
+    Restored compatibility function: keeps the previous call-site contract
+    (returns ``(schema, meta)``) and runs before app lifespan startup logic.
+    """
+    meta: dict = {"reader_grants_repaired": False, "admin_public_table_count": None}
+    try:
+        # New extractor expects a session id; older variants did not.
+        try:
+            schema = extract_full_schema("startup")
+        except TypeError:
+            schema = extract_full_schema()  # pragma: no cover (legacy fallback)
+    except Exception as e:
+        log.warning("Startup schema extract failed: %s", e)
+        schema = {"tables": {}, "enums": {}, "domains": []}
+
+    if not isinstance(schema, dict):
+        schema = {"tables": {}, "enums": {}, "domains": []}
+    schema.setdefault("tables", {})
+    schema.setdefault("enums", {})
+    schema.setdefault("domains", [])
+
+    if not schema.get("tables"):
+        sync_s = get_sync_target_schema()
+        meta["hint"] = (
+            f"No tables visible to the API at startup (sync schema: {sync_s!r}). "
+            "Connect/activate a session from the UI, then reload schema."
+        )
+    return schema, meta
 
 
 @asynccontextmanager

@@ -58,6 +58,15 @@ def render_tenant_dashboard() -> None:
         "Tenant Dashboard",
         f"Welcome, {username}. Manage projects and continue your workspace flow.",
     )
+    st.markdown(
+        """
+<div class="nl-banner">
+  <h3>Workspace Overview</h3>
+  <p>Use this dashboard to create, open, edit, and delete projects before entering NL-to-SQL explorer.</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     st.divider()
     st.markdown("### Welcome")
