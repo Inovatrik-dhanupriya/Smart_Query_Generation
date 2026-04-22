@@ -27,7 +27,8 @@ Given a user question and a catalog of ALL available database tables, select EXA
 
 Rules:
 - Select tables that directly contain the needed data.
-- Also include tables needed for JOINs to get names, labels or related data.
+- Also include tables needed for JOINs to get names, labels, titles, or descriptions (not just raw foreign-key ids).
+- If the user asks for "X with Y names" / "employees with department names" / "with their department" / "including category labels", you MUST include BOTH the main entity table (employees/users/…) AND the lookup/dimension table that stores those names (departments/categories/…), whenever such tables exist in the catalog.
 - If the question can be answered from one table alone, return only that table.
 - Never select tables that are not relevant to the question.
 - Return ONLY a valid JSON array of table name strings. No explanation, no markdown.
@@ -78,8 +79,8 @@ def select_tables_agent(
     except Exception:
         pass
 
-    # Fallback: return top-2 tables by catalog order
-    return all_table_names[:2]
+    # Let the caller fall back to FAISS retrieval — do not guess arbitrary table names.
+    return []
 
 
 # ── SQL generation prompt (compact — saves input tokens on every request) ───
@@ -101,6 +102,9 @@ CORE
 • [R17] LEFT JOIN = optional related data; INNER JOIN = user expects related rows to exist.
 • [R18] Latest row per parent: DISTINCT ON (parent_pk) … ORDER BY parent_pk, child_time DESC NULLS LAST.
 • [R19] Prefer === SEMANTIC COLUMN HINTS === (sorted best-first; +data = sample had a real value). If several columns match one user word, use the top +data line — never a shorter empty synonym. If hints empty, substring-match inside C:.
+• [R20] PostgreSQL folds unquoted identifiers to lowercase. If a T: table key contains a dot (schema.table) OR any uppercase letter in the schema or table name, you MUST double-quote each part exactly as in metadata: FROM "ExactSchema"."exact_table" AS alias — never write ExactSchema.table without quotes (that resolves to wrong lower-case objects).
+• [R21] Questions like "employees with department **names**" / "**display** X **with** Y" require JOIN(s) per FK lines and the SELECT list must include the **name/title/label** column from the related table — not only FK ids from the fact table.
+• [R22] Every relation in FROM / JOIN MUST match a **T:** table line in === RELEVANT SCHEMA === (exact real table name). Never invent common names like ``clinics``, ``users``, ``orders`` unless that exact table appears in those T: lines.
 
 META (information_schema / pg_catalog SELECTs only, with LIMIT+OFFSET): list tables → information_schema.tables; list columns → information_schema.columns WHERE table_name=<name>; users/roles → app tables if present else pg_catalog.pg_user.
 
@@ -129,6 +133,71 @@ def _tokens_from_query(text: str) -> list[str]:
         t for t in re.findall(r"[a-z0-9]+", text.lower())
         if len(t) >= 3 and t not in _QUERY_STOPWORDS
     ]
+
+
+def inferred_top_k_for_query(user_query: str, base: int) -> int:
+    """
+    Widen FAISS retrieval when the question clearly needs multiple joined entities.
+    """
+    q = (user_query or "").lower()
+    base = max(1, int(base))
+    if re.search(
+        r"\b(with|including|each|every|along with|together with|and their|display)\b",
+        q,
+    ):
+        return max(base, 6)
+    if re.search(
+        r"\b(name|names|title|titles|label)\b.*\b(department|division|category|manager|supervisor|region)\b|"
+        r"\b(department|division|category|employee|staff)\b.*\b(name|names)\b",
+        q,
+    ):
+        return max(base, 6)
+    return base
+
+
+def expand_selected_tables_for_nl_query(
+    user_query: str,
+    selected_tables: list[str],
+    schema: dict,
+    *,
+    max_tables: int = 22,
+) -> list[str]:
+    """
+    Pull in extra tables when question tokens match table keys (e.g. *department* →
+    ``public.departments``) so semantic hints and FK context include lookup tables.
+    """
+    sel = list(dict.fromkeys(selected_tables))
+    have = set(sel)
+    tokens = _tokens_from_query(user_query)
+    extra: list[str] = []
+    all_t = schema.get("tables", {}) or {}
+    for tkey in all_t:
+        if tkey in have:
+            continue
+        tl = tkey.lower()
+        short = tl.split(".")[-1]
+        hit = False
+        for tok in tokens:
+            if len(tok) < 4:
+                continue
+            if tok in tl or tok in short:
+                hit = True
+                break
+            if tok.endswith("s") and len(tok) > 4:
+                root = tok[:-1]
+                if len(root) >= 4 and (root in short or root in tl):
+                    hit = True
+                    break
+            if not tok.endswith("s") and len(tok) >= 4:
+                plural = tok + "s"
+                if plural in short or plural in tl:
+                    hit = True
+                    break
+        if hit:
+            extra.append(tkey)
+    merged = sel + [t for t in extra if t not in have]
+    merged = list(dict.fromkeys(merged))
+    return merged[:max_tables]
 
 
 _JUNK_SAMPLE = frozenset(
@@ -393,6 +462,155 @@ def build_schema_block(
 
     return "\n".join(lines)
 
+def _extract_sql_from_jsonish(raw: str) -> str:
+    """
+    Recover SQL from model output when JSON is truncated or malformed.
+    """
+    m = re.search(r'"sql"\s*:\s*"', raw)
+    if not m:
+        return ""
+    body = raw[m.end() :]
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body):
+            out.append(body[i : i + 2])
+            i += 2
+            continue
+        if body[i] == '"':
+            break
+        out.append(body[i])
+        i += 1
+    if i < len(body) and body[i] == '"':
+        text = "".join(out)
+    else:
+        text = body
+        text = re.sub(r',?\s*"(?:explanation|chart_suggestion)"\s*:.*$', "", text, flags=re.DOTALL | re.IGNORECASE)
+    return (
+        text.replace("\\n", "\n")
+        .replace('\\"', '"')
+        .replace("\\\\", "\\")
+        .strip()
+    )
+
+
+def _dedupe_prompt_list(prompts: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in prompts:
+        s = (p or "").strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+    return out
+
+
+def _parse_catalog_blocks(table_catalog: str) -> list[dict[str, str | list[str]]]:
+    """
+    Parse ``build_table_catalog`` output into table name + column list per block.
+    """
+    blocks: list[dict[str, str | list[str]]] = []
+    lines = table_catalog.splitlines()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^•\s+(.+?)\s+\(\d+\s+columns\)\s*$", lines[i])
+        if not m:
+            i += 1
+            continue
+        name = m.group(1).strip()
+        cols: list[str] = []
+        fk_line = ""
+        i += 1
+        while i < len(lines):
+            ln = lines[i]
+            if ln.startswith("• "):
+                break
+            cm = re.match(r"^\s+Columns\s*:\s*(.+)$", ln, re.IGNORECASE)
+            if cm:
+                raw = cm.group(1)
+                if "…" in raw:
+                    raw = raw.split("…", 1)[0]
+                if "..." in raw:
+                    raw = raw.split("...", 1)[0]
+                cols = [x.strip() for x in raw.split(",") if x.strip()]
+            fm = re.match(r"^\s+FK links:\s*(.+)$", ln, re.IGNORECASE)
+            if fm:
+                fk_line = fm.group(1).strip()
+            i += 1
+        blocks.append({"table": name, "columns": cols, "fk": fk_line})
+    return blocks
+
+
+def _varied_fallback_prompts(table_catalog: str, max_prompts: int = 6) -> list[str]:
+    """
+    When the LLM is unavailable, build six DISTINCT prompts from catalog text:
+    rotate question patterns and use real column names so we do not repeat
+    “count + latest 5” for every table.
+    """
+    blocks = _parse_catalog_blocks(table_catalog)
+    if not blocks:
+        return []
+
+    n = len(blocks)
+    out: list[str] = []
+
+    def push(s: str) -> None:
+        s = (s or "").strip()
+        if not s:
+            return
+        if s.lower() in {x.lower() for x in out}:
+            return
+        out.append(s)
+
+    # Six different “shapes”; table chosen round-robin so each table gets airtime.
+    for slot in range(max_prompts):
+        b = blocks[slot % n]
+        t = str(b["table"])
+        cols = b.get("columns") or []
+        if isinstance(cols, str):
+            cols = []
+        c0 = cols[0] if cols else None
+        c1 = cols[1] if len(cols) > 1 else None
+        cl = cols[-1] if cols else None
+        fk = str(b.get("fk") or "")
+        kind = slot % 6
+
+        if kind == 0:
+            push(f"How many rows are in {t}?")
+        elif kind == 1:
+            push(f"Show 5 recent rows from {t}")
+        elif kind == 2:
+            if c0:
+                push(f"What distinct {c0} values appear in {t}?")
+            else:
+                push(f"What unique values define rows in {t}?")
+        elif kind == 3:
+            if cl:
+                push(f"Top 10 rows in {t} ordered by {cl} descending")
+            else:
+                push(f"Show an ordered preview of {t}")
+        elif kind == 4:
+            if c0 and c1:
+                push(f"How many rows in {t} for each {c0}, split by {c1}?")
+            elif c0:
+                push(f"Count rows in {t} grouped by {c0}")
+            else:
+                push(f"Summarize counts by category in {t}")
+        else:
+            if fk and n > 1:
+                push(f"Join {t} to related tables using foreign keys and show readable labels")
+            elif c0:
+                push(f"Find rows in {t} where {c0} is not null")
+            else:
+                push(f"What stands out in {t} compared to the other tables?")
+
+    return _dedupe_prompt_list(out)[:max_prompts]
+
+
 # Generates SQL query based on user prompt and selected tables.
 # Build Prompt -> Combines: schema, user question, chat history.
 
@@ -418,9 +636,12 @@ def suggest_prompts(
     message = f"""{table_catalog}
 {follow_up_hint}
 Rules:
-- Use ACTUAL table and column names from the catalog above.
-- Mix query types: counts, filters, aggregates, joins, top-N, averages.
+- Use ACTUAL fully-qualified table names (schema.table) and column names from the catalog.
+- Mix query types: counts, filters, aggregates, joins, top-N, averages, group-bys.
 - Keep each question short and natural (under 70 characters).
+- All 6 strings must be DISTINCT — do not repeat the same or near-duplicate question.
+- Do NOT use the same wording pattern more than once (e.g. avoid six questions that only swap the table name).
+- When several tables exist, reference different tables AND different columns across the 6 questions.
 - Do NOT repeat questions already implied by the schema headers.
 - Return ONLY a valid JSON array of exactly 6 strings, no markdown.
 
@@ -434,9 +655,10 @@ Example output: ["How many orders last month?", "Top 10 products by revenue", ..
                 system_instruction=(
                     "You are a helpful data analyst. "
                     "Suggest natural language questions a user might ask about this database. "
+                    "Each question must be structurally different — vary intent (count vs filter vs join vs trend). "
                     "Return ONLY a JSON array of 6 strings."
                 ),
-                max_output_tokens=300,
+                max_output_tokens=512,
                 temperature=1.0,   # higher → more variety each time
             ),
         )
@@ -448,18 +670,27 @@ Example output: ["How many orders last month?", "Top 10 products by revenue", ..
             raise ValueError("empty model output")
         prompts = json.loads(raw)
         if isinstance(prompts, list) and len(prompts) >= 3:
-            return [str(p) for p in prompts[:6]]
+            merged = _dedupe_prompt_list([str(p) for p in prompts])
+            if len(merged) >= 6:
+                return merged[:6]
+            merged = _dedupe_prompt_list(merged + _varied_fallback_prompts(table_catalog))
+            if merged:
+                return merged[:6]
     except Exception:
         pass
 
-    # Fallback: generic prompts derived from table names in catalog
-    tables = re.findall(r"^• (\w+)", table_catalog, re.MULTILINE)
-    fallback = []
-    for t in tables[:3]:
-        fallback += [f"How many records are in {t}?", f"Show the latest 5 rows from {t}"]
-    return fallback[:6] or ["Show me all data", "How many records exist?",
-                             "What tables are available?", "Show recent records",
-                             "Count records grouped by type", "Show top 10 rows"]
+    # Fallback: column-aware varied prompts (no repeated count/latest pair per table)
+    fallback = _varied_fallback_prompts(table_catalog)
+    if fallback:
+        return fallback[:6]
+    return [
+        "Show me all data",
+        "How many records exist?",
+        "What tables are available?",
+        "Show recent records",
+        "Count records grouped by type",
+        "Show top 10 rows",
+    ]
 
 
 def generate_sql(
@@ -470,6 +701,7 @@ def generate_sql(
     chat_history: list[dict] | None = None,
     row_limit: int = 20,
     offset: int = 0,
+    repair_hint: str | None = None,
 ) -> dict:
     """
     Returns {"sql": ..., "explanation": ..., "chart_suggestion": ..., "viz_config": {...}}
@@ -499,10 +731,16 @@ JOIN RULES (mandatory):
 - Check Foreign Keys in the schema above. If FK links exist, write JOIN queries.
 - Never return raw ID columns when the related name/label can be fetched via JOIN.
 
+RELATED NAMES (mandatory):
+- If the user asked for "department names", "category names", "manager names", or similar, the SELECT list MUST include the human-readable column from the joined table (e.g. department.name, d.title), not only *_id from the main table.
+
 COLUMN PICK (mandatory):
 - Use === SEMANTIC COLUMN HINTS === top entries; prefer lines with (+data). SELECT those exact names.
 
 Generate the SQL query now."""
+
+    if (repair_hint or "").strip():
+        user_message = user_message + "\n\n=== CORRECTION (mandatory) ===\n" + repair_hint.strip()
 
     # Build conversation history in google-genai Content format
     contents: list[types.Content] = []
@@ -518,13 +756,13 @@ Generate the SQL query now."""
     )
 
     # Generate SQL query using Google Gemini.
-    max_out = int(os.getenv("GEMINI_SQL_MAX_OUTPUT_TOKENS", "2048"))
+    max_out = int(os.getenv("GEMINI_SQL_MAX_OUTPUT_TOKENS", "4096"))
     response = generate_content_with_retry(
         model=get_text_model(),
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=max(256, min(max_out, 8192)),
+            max_output_tokens=max(512, min(max_out, 8192)),
             temperature=0.1,
         ),
     )
@@ -543,12 +781,7 @@ Generate the SQL query now."""
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
-        # Last resort: pull a sql-ish string from messy output
-        sql_match = re.search(r'"sql"\s*:\s*"(.*?)"\s*,\s*"(?:explanation|chart)', raw, re.DOTALL)
-        if not sql_match:
-            sql_match = re.search(r'"sql"\s*:\s*"(.*)"\s*}', raw, re.DOTALL)
-        sql = sql_match.group(1) if sql_match else ""
-        sql = sql.replace("\\n", "\n").replace('\\"', '"')
+        sql = _extract_sql_from_jsonish(raw)
         if not sql.strip():
             raise ValueError(
                 "The model did not return valid JSON. Raw preview (first 500 chars): "
