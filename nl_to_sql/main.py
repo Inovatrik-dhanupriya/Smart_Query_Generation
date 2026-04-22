@@ -1,25 +1,36 @@
 """
-main.py  –  NL → SQL FastAPI Application
-Schema and table names come from the live database and uploaded schema JSON — not from code.
+main.py — NL → SQL FastAPI
 
-Run:
+Database host, database name, schema, and table names are supplied by the client
+(UI); nothing is read from environment variables for connection targets.
+
+Run (from ``nl_to_sql/``):
     uvicorn main:app --reload --port 8000
 """
+# Note: avoid ``from __future__ import annotations`` here — Pydantic v2 + FastAPI
+# need real class objects in route parameter annotations (e.g. ``DbConnectBody``).
+
+import hashlib
+import json as _json
 import logging
 import os
 import re
 import sys
+import threading
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import bcrypt
 from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from google.genai import errors as genai_errors
 
 from utils.config import (
@@ -29,116 +40,378 @@ from utils.config import (
     session_max_age_hours,
     session_max_turns,
 )
-from utils.env import load_app_env
+from utils.env import load_app_env, package_root
 
 load_app_env()
 
-from llm import generate_sql, select_tables_agent, suggest_prompts
+from db import (
+    PgCredentials,
+    close_pool,
+    has_pool,
+    register_pool,
+)
+from llm import (
+    expand_selected_tables_for_nl_query,
+    generate_sql,
+    inferred_top_k_for_query,
+    select_tables_agent,
+    suggest_prompts,
+)
+from schema.discovery import list_database_names, list_schema_names
 from schema.extractor import (
     build_table_catalog,
     extract_full_schema,
-    get_sync_target_schema,
+    get_tables,
     schema_scan_description,
     schema_to_text,
+    validate_pg_identifier,
 )
+from schema.file_schema import schema_from_uploaded_json
+from schema.materialize import provision_schema_to_database
 from schema.importer import (
-    count_public_physical_tables_admin,
+    bulk_sync_tables_from_remote,
     fetch_from_remote_api,
     import_table as import_table_to_db,
-    parse_schema_json,
-    repair_reader_grants_public,
     sync_table,
 )
-from schema.retriever import SchemaRetriever
+from schema.retriever import SchemaRetriever, fk_expand_seed_tables
 from sql_engine import (
     SQLValidationError,
     cache_clear,
     cache_stats,
+    canonical_tables_referenced_in_sql,
     execute_sql,
     execute_sql_page,
+    fix_postgresql_mixed_case_identifiers,
+    unknown_tables_in_sql,
     validate_sql,
+    validate_sql_tables_against_schema,
 )
 from db import ensure_auth_tables, ensure_userdetails_database, get_app_db_cursor
 
-# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
 )
 log = logging.getLogger(__name__)
 
-# ── Startup env-var validation ────────────────────────────────────────────────
-_REQUIRED_ENV = ["GEMINI_API_KEY", "DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD"]
+_REQUIRED_ENV = ["GEMINI_API_KEY"]
+
 
 def _check_env() -> None:
     missing = [k for k in _REQUIRED_ENV if not os.getenv(k)]
     if missing:
-        log.critical(f"Missing required environment variables: {missing}")
+        log.critical("Missing required environment variables: %s", missing)
         sys.exit(1)
+
 
 _check_env()
 
+# ── Per-session NL→SQL state (key = client session_id from UI) ───────────────
+nl_sessions: dict[str, dict[str, Any]] = {}
 
-def _extract_schema_with_reader_repair() -> tuple[dict, dict]:
+# ── Background schema upload jobs (for cancel / pause / resume during remote sync) ─
+_schema_upload_jobs: dict[str, dict[str, Any]] = {}
+_schema_upload_jobs_lock = threading.Lock()
+
+
+def _schema_job_progress_cb(job_id: str):
+    def _cb(cur: int, total: int, table_key: str) -> None:
+        with _schema_upload_jobs_lock:
+            j = _schema_upload_jobs.get(job_id)
+            if j:
+                j["sync_current"] = cur
+                j["sync_total"] = total
+                j["current_table"] = table_key
+                j["phase"] = "remote_sync"
+
+    return _cb
+
+
+def _schema_upload_core(
+    job_id: str | None,
+    sid: str,
+    database_name: str,
+    schema: dict[str, Any],
+    skipped_tables: list,
+    _kc: bool,
+    _mat: bool,
+    _target: str,
+    remote_data_url: str,
+    remote_row_limit: str,
+) -> dict[str, Any]:
     """
-    Run extract_full_schema(); if the read-only DB_USER sees no tables but the
-    admin connection still finds physical tables in DB_SYNC_SCHEMA, repair GRANTs and
-    extract again so the UI and FAISS match what pgAdmin shows.
+    Shared implementation for POST /schema/from-file and background jobs.
     """
-    meta: dict = {"reader_grants_repaired": False, "admin_public_table_count": None}
-    schema = extract_full_schema()
-    if schema.get("tables"):
-        return schema, meta
-    try:
-        n_admin = count_public_physical_tables_admin()
-    except Exception as e:
-        log.warning("count_public_physical_tables_admin failed: %s", e)
-        n_admin = -1
-    meta["admin_public_table_count"] = n_admin
-    reader = os.getenv("DB_USER", "").strip()
-    sync_s = get_sync_target_schema()
-    if n_admin <= 0 or not reader:
-        meta["hint"] = (
-            f"No tables visible to the API user and admin found none in schema {sync_s!r}. "
-            "Confirm DB_NAME / DB_HOST match pgAdmin, DB_SYNC_SCHEMA matches where tables live, "
-            "and objects are ordinary tables (relkind 'r')."
-        )
-        return schema, meta
-    admin_user = os.getenv("DB_ADMIN_USER", "postgres").strip()
-    if reader == admin_user:
-        if n_admin > 0:
-            meta["hint"] = (
-                "DB_USER is the same as DB_ADMIN_USER, yet no tables in metadata — "
-                "this is not a GRANT issue. Check DB_SCHEMAS in .env or that the API "
-                "points at the same database you use in pgAdmin."
+    cancel_ev = pause_ev = None
+    on_prog = None
+    if job_id:
+        with _schema_upload_jobs_lock:
+            job = _schema_upload_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown job_id")
+        cancel_ev = job["cancel"]
+        pause_ev = job["pause"]
+        on_prog = _schema_job_progress_cb(job_id)
+
+    if _mat:
+        if not _kc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Provisioning requires an active PostgreSQL session. Connect first "
+                    "(Live PostgreSQL or “New connection” under Upload), then upload with "
+                    "keep connection enabled, and check “Create database & tables on server”."
+                ),
             )
-        return schema, meta
-    ok, err = repair_reader_grants_public()
-    if not ok and err:
-        meta["repair_error"] = err
-        meta["hint"] = (
-            f"Admin role sees ~{n_admin} table(s) in schema {sync_s!r}, but '{reader}' cannot read them "
-            f"(information_schema is empty for that role). Grant repair failed: {err}. "
-            f"Grant SELECT ON ALL TABLES IN SCHEMA {sync_s} TO your DB_USER manually."
+        sess_pre = _get_nl(sid)
+        creds = sess_pre.get("credentials") if sess_pre else None
+        if not creds:
+            raise HTTPException(
+                status_code=400,
+                detail="No database credentials in session. POST /db/connect before materializing.",
+            )
+        if job_id:
+            with _schema_upload_jobs_lock:
+                j = _schema_upload_jobs.get(job_id)
+                if j:
+                    j["phase"] = "provision"
+                    j["message"] = "Creating database and DDL…"
+        try:
+            prov = provision_schema_to_database(creds, _target, schema)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        close_pool(sid)
+        new_creds = PgCredentials(
+            host=creds.host,
+            port=creds.port,
+            user=creds.user,
+            password=creds.password,
+            database=_target,
         )
-        return schema, meta
-    if ok:
-        meta["reader_grants_repaired"] = True
-        log.info(
-            "Applied GRANT SELECT to DB_USER for schema %s (reader/admin visibility fix).",
-            sync_s,
+        register_pool(sid, new_creds, read_only=True)
+        sess = _ensure_nl(sid)
+        sess["credentials"] = new_creds
+        sess["database"] = _target
+
+        pairs = [
+            (m["schema_name"], m["table_name"])
+            for m in schema.get("tables", {}).values()
+        ]
+        sch_set = sorted({p[0] for p in pairs})
+        if job_id:
+            with _schema_upload_jobs_lock:
+                j = _schema_upload_jobs.get(job_id)
+                if j:
+                    j["phase"] = "extract_schema"
+                    j["message"] = "Reading table metadata…"
+        try:
+            schema = extract_full_schema(sid, allowed_schemas=sch_set, only_tables=pairs)
+        except Exception as ex:
+            log.warning("Post-DDL extract_full_schema failed; using file schema: %s", ex)
+
+        data_sync: dict[str, Any] | None = None
+        _ru = (remote_data_url or "").strip()
+        if _ru:
+            try:
+                rl = int((remote_row_limit or "5000").strip() or "5000")
+            except ValueError:
+                rl = 5000
+            rl = max(1, min(rl, 100_000))
+            if job_id:
+                with _schema_upload_jobs_lock:
+                    j = _schema_upload_jobs.get(job_id)
+                    if j:
+                        j["sync_total"] = len(pairs)
+                        j["sync_current"] = 0
+                        j["phase"] = "remote_sync"
+                        j["message"] = "Loading rows from remote API…"
+            try:
+                data_sync = bulk_sync_tables_from_remote(
+                    new_creds,
+                    pairs,
+                    _ru,
+                    row_limit=rl,
+                    cancel_event=cancel_ev,
+                    pause_event=pause_ev,
+                    on_progress=on_prog,
+                )
+            except Exception as e:
+                log.exception("Remote data sync failed")
+                data_sync = {"error": str(e)}
+            try:
+                schema = extract_full_schema(sid, allowed_schemas=sch_set, only_tables=pairs)
+            except Exception as ex:
+                log.warning("Post-sync extract_full_schema failed: %s", ex)
+
+        _rebuild_nl_state(sid, schema)
+        sess["execution_enabled"] = True
+        sess["source"] = "live"
+        sess["logical_database_name"] = _target
+        sess["selected_schemas"] = sch_set
+        sess["selected_pairs"] = pairs
+        if _ru:
+            sess["remote_data_url"] = _ru
+        cache_clear()
+
+        hint = (
+            f"Created database {prov['target_database']!r} "
+            f"({'new' if prov['created_database'] else 'already existed'}). "
+            f"Applied DDL for {prov['tables_created']} table(s). SQL execution is enabled."
         )
-    schema = extract_full_schema()
-    if not schema.get("tables") and n_admin > 0:
-        meta["hint"] = (
-            f"After GRANT, '{reader}' still sees 0 tables. Check DB_SCHEMAS in .env "
-            "(must include the schema where tables live) or confirm DB_USER name spelling."
+        for note in prov.get("notes") or []:
+            hint += " " + note
+        if skipped_tables:
+            preview = "; ".join(skipped_tables[:15])
+            if len(skipped_tables) > 15:
+                preview += " …"
+            hint += f" Notes: {preview}"
+        if data_sync and data_sync.get("error"):
+            hint += f" Remote data sync error: {data_sync['error']}"
+        elif data_sync and data_sync.get("canceled"):
+            hint += " Remote data sync was stopped before all tables finished (partial load)."
+        elif data_sync and "rows_upserted_total" in data_sync:
+            hint += (
+                f" Remote API: upserted ~{data_sync['rows_upserted_total']} row(s) "
+                f"across {data_sync.get('tables_processed', 0)} table(s)."
+            )
+            if _ru:
+                hint += (
+                    " Incremental mode: for tables with a numeric `id`, each run requests rows "
+                    "with `id` greater than your local `MAX(id)` (up to `row_limit` per table), "
+                    "so smaller limits append new data instead of re-fetching the first page."
+                )
+            err_n = len(data_sync.get("errors") or [])
+            if err_n:
+                hint += f" ({err_n} table(s) reported fetch/sync errors — see data_sync in response.)"
+        return {
+            "status": "active",
+            "database_name": _target,
+            "table_count": len(schema.get("tables", {})),
+            "tables": list(schema.get("tables", {}).keys()),
+            "skipped_tables": skipped_tables,
+            "execution_enabled": True,
+            "materialized": prov,
+            "data_sync": data_sync,
+            "hint": hint,
+        }
+
+    _rebuild_nl_state(sid, schema)
+    sess = _ensure_nl(sid)
+    sess["execution_enabled"] = False
+    sess["source"] = "file"
+    sess["logical_database_name"] = database_name.strip()
+    sess["selected_schemas"] = []
+    sess["selected_pairs"] = list(schema.get("tables", {}).keys())
+    if not _kc:
+        sess["credentials"] = None
+        sess["database"] = None
+        close_pool(sid)
+    hint = (
+        "Connect to a PostgreSQL instance with the same tables, then POST /db/activate "
+        "to enable query execution."
+    )
+    if skipped_tables:
+        preview = "; ".join(skipped_tables[:20])
+        if len(skipped_tables) > 20:
+            preview += f" … (+{len(skipped_tables) - 20} more)"
+        hint = (
+            f"Skipped {len(skipped_tables)} table(s) with no column definitions: {preview}. "
+            + hint
         )
-    return schema, meta
+    return {
+        "status": "active",
+        "database_name": database_name.strip(),
+        "table_count": len(schema.get("tables", {})),
+        "tables": list(schema.get("tables", {}).keys()),
+        "skipped_tables": skipped_tables,
+        "execution_enabled": False,
+        "hint": hint,
+    }
 
 
-# ── App state (loaded once at startup) ───────────────────────────────────────
-app_state: dict = {}
+def _faiss_dir_for(session_id: str) -> Path:
+    h = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:28]
+    return package_root() / ".faiss_cache" / f"s_{h}"
+
+
+def _get_nl(session_id: str) -> dict[str, Any] | None:
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    return nl_sessions.get(sid)
+
+
+def _ensure_nl(session_id: str) -> dict[str, Any]:
+    sid = (session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id is required.")
+    if sid not in nl_sessions:
+        nl_sessions[sid] = {
+            "schema":         {"tables": {}, "enums": {}, "domains": []},
+            "descriptions":   {},
+            "table_catalog":  "",
+            "retriever":      None,
+            "execution_enabled": False,
+            "credentials":    None,
+            "database":       None,
+            "selected_schemas": [],
+            "selected_pairs": [],
+            "source":         None,
+            "logical_database_name": None,
+        }
+    return nl_sessions[sid]
+
+
+def _gemini_embed_error_to_http(e: genai_errors.ClientError) -> HTTPException:
+    """Turn Gemini embedding/text API failures into JSON-friendly HTTP errors for the UI."""
+    sc = getattr(e, "status_code", None)
+    text = str(e).lower()
+    if sc == 429 or "resource_exhausted" in text:
+        return HTTPException(
+            status_code=503,
+            detail=(
+                "Google Gemini rate limit while building table embeddings. "
+                f"Wait and retry, or try again later. ({e})"
+            ),
+        )
+    if sc in (400, 401, 403) and (
+        "api key" in text
+        or "api_key" in text
+        or "invalid_argument" in text
+        or "permission" in text
+    ):
+        return HTTPException(
+            status_code=502,
+            detail=(
+                "Google Gemini rejected the request while embedding table descriptions (needed for table search). "
+                "Fix: set GEMINI_API_KEY in your project root `.env` to a valid key from "
+                "https://aistudio.google.com/apikey , ensure the Generative Language API is enabled for that key, "
+                "then restart `uvicorn`. "
+                f"Upstream message: {e}"
+            ),
+        )
+    return HTTPException(
+        status_code=502,
+        detail=f"Gemini API error during embedding: {e}",
+    )
+
+
+def _rebuild_nl_state(sid: str, schema: dict) -> None:
+    sess = _ensure_nl(sid)
+    descriptions = schema_to_text(schema)
+    table_catalog = build_table_catalog(schema)
+    cache_dir = _faiss_dir_for(sid)
+    try:
+        retriever = SchemaRetriever(descriptions, cache_dir=cache_dir)
+    except genai_errors.ClientError as e:
+        log.warning("SchemaRetriever embedding failed: %s", e)
+        raise _gemini_embed_error_to_http(e) from e
+    sess["schema"] = schema
+    sess["descriptions"] = descriptions
+    sess["table_catalog"] = table_catalog
+    sess["retriever"] = retriever
 
 
 @asynccontextmanager
@@ -195,92 +468,81 @@ async def lifespan(app: FastAPI):
         )
     else:
         log.info(f"Schema loaded — {len(tables)} table(s): {tables}")
+    log.info("NL→SQL API ready — connect and activate a session from the UI.")
     yield
     log.info("Shutting down.")
 
 
-# ── Rate limiter (per client IP) ──────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 app = FastAPI(
     title="NL → SQL API",
-    description="Natural Language to SQL — automatically adapts to all tables in the database.",
-    version="2.0.0",
+    description="Natural language to SQL — database context is provided per session from the UI.",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS — origins from ``CORS_ORIGINS`` (see ``utils.config.cors_origins``) ──
-_ALLOWED_ORIGINS = cors_origins()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
+    allow_origins=cors_origins(),
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
-# ── Session store — persisted to disk so history survives server restarts ─────
-import json as _json
-import threading
-
+# ── Chat session persistence (same as before) ──────────────────────────────────
 _SESSION_FILE = Path(os.getenv(
     "SESSION_STORE_FILE",
-    Path(__file__).parent.parent / ".session_store.json"
+    Path(__file__).resolve().parent.parent / ".session_store.json",
 ))
-
 _SESSION_MAX_TURNS = session_max_turns()
 _SESSION_MAX_AGE_H = session_max_age_hours()
 
-# ── LLM response cache (question → {sql, chart, viz_config}) ──────────────────
-# Avoids a full 2–4 s LLM round-trip for repeated identical questions.
-import hashlib as _hashlib
 _llm_cache: dict[str, dict] = {}
 _LLM_CACHE_MAX = llm_cache_max_entries()
 
+
 def _llm_cache_key(prompt: str, table_fingerprint: str) -> str:
     raw = f"{prompt.lower().strip()}|{table_fingerprint}"
-    return _hashlib.md5(raw.encode()).hexdigest()
+    return hashlib.md5(raw.encode()).hexdigest()
+
 
 def _llm_cache_get(key: str) -> dict | None:
     return _llm_cache.get(key)
 
+
 def _llm_cache_set(key: str, value: dict) -> None:
     if len(_llm_cache) >= _LLM_CACHE_MAX:
-        # evict oldest quarter
-        for k in list(_llm_cache.keys())[:_LLM_CACHE_MAX // 4]:
+        for k in list(_llm_cache.keys())[: _LLM_CACHE_MAX // 4]:
             _llm_cache.pop(k, None)
     _llm_cache[key] = value
 
-# ── Agent table-selection threshold ───────────────────────────────────────────
-# When the DB has ≤ this many tables, skip the LLM agent (which costs ~1-2 s)
-# and use the fast FAISS retriever directly.
-_AGENT_TABLE_THRESHOLD = agent_table_threshold()
+
+def _llm_cache_pop(key: str) -> None:
+    _llm_cache.pop(key, None)
 
 
 def _load_sessions() -> dict[str, list[dict]]:
-    """Load sessions from disk. Drops sessions older than _SESSION_MAX_AGE_H."""
     if not _SESSION_FILE.exists():
         return {}
     try:
         data = _json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
         cutoff = time.time() - _SESSION_MAX_AGE_H * 3600
-        # Each session entry is {turns: [...], updated_at: float}
         return {
             sid: entry["turns"]
             for sid, entry in data.items()
             if entry.get("updated_at", 0) >= cutoff
         }
     except Exception as e:
-        log.warning(f"Session file load failed ({e}) — starting fresh.")
+        log.warning("Session file load failed (%s) — starting fresh.", e)
         return {}
 
 
 def _save_sessions(store: dict[str, list[dict]]) -> None:
-    """Persist sessions to disk in a background thread — never blocks the response."""
-    snapshot = dict(store)  # shallow copy so we don't race on the live dict
+    snapshot = dict(store)
+
     def _write():
         try:
             _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -290,28 +552,396 @@ def _save_sessions(store: dict[str, list[dict]]) -> None:
             }
             _SESSION_FILE.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
-            log.warning(f"Session file save failed: {e}")
+            log.warning("Session file save failed: %s", e)
+
     threading.Thread(target=_write, daemon=True).start()
 
 
-import time
-
 sessions: dict[str, list[dict]] = _load_sessions()
-log.info(f"Session store loaded — {len(sessions)} active session(s).")
+log.info("Chat session store loaded — %s active session(s).", len(sessions))
+
+_AGENT_TABLE_THRESHOLD = agent_table_threshold()
+
+_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
 
 
-# ── Request / Response models ─────────────────────────────────────────────────
+def _last_assistant_sql(history: list[dict]) -> Optional[str]:
+    """Most recent assistant message that looks like executable SQL."""
+    for turn in reversed(history):
+        if turn.get("role") != "assistant":
+            continue
+        c = (turn.get("content") or "").strip()
+        if not c:
+            continue
+        cu = c.upper()
+        if cu.startswith("SELECT") or cu.startswith("WITH"):
+            return c
+    return None
+
+
+def _is_tables_used_meta_question(prompt: str) -> bool:
+    """
+    True when the user is asking which tables the assistant used, not asking for
+    data from tables named "which…". Those meta questions are a poor fit for the
+    strict JSON SQL generator and often yield empty model output.
+    """
+    t = (prompt or "").lower()
+    if not t.strip():
+        return False
+    if "which tables have" in t or "what tables have" in t:
+        return False
+    if "which tables" not in t and "what tables" not in t:
+        return False
+    triggers = (
+        "did you use",
+        "you use",
+        "were used",
+        "you picked",
+        "you selected",
+        "did you pick",
+        "did you select",
+        "chose",
+        "picked",
+        "using for this",
+    )
+    if any(x in t for x in triggers):
+        return True
+    return bool(
+        re.search(r"\b(use|used)\s+(the\s+)?(for\s+this\s+)?(query|sql)\b", t)
+    )
+
+
+def _is_schema_table_count_question(prompt: str) -> bool:
+    """
+    True for questions like "how many tables in the database/schema?" where the
+    user expects a **catalog** count (information_schema), not a literal derived
+    from the subset of tables loaded for NL→SQL context (often dozens, not all).
+    """
+    if _is_tables_used_meta_question(prompt):
+        return False
+    t = (prompt or "").lower()
+    if "table" not in t:
+        return False
+    if re.search(r"\bhow\s+many\s+tables\b", t):
+        return True
+    if re.search(r"\bnumber\s+of\s+tables\b", t):
+        return True
+    if "tables" in t and re.search(r"\b(schema|database|catalog|db)\b", t):
+        if re.search(r"\b(count|counting|total|totals|quantity|amount)\b", t):
+            return True
+        if "how many" in t:
+            return True
+    return False
+
+
+def _information_schema_base_tables_where(selected_schemas: list[str]) -> str:
+    """SQL WHERE fragment for ``information_schema.tables`` (BASE TABLE, non-system)."""
+    if selected_schemas:
+        parts: list[str] = []
+        for raw in selected_schemas:
+            sch = validate_pg_identifier(str(raw).strip())
+            parts.append("'" + sch.replace("'", "''") + "'::text")
+        arr = "ARRAY[" + ",".join(parts) + "]::text[]"
+        return (
+            "t.table_type = 'BASE TABLE' "
+            f"AND t.table_schema = ANY({arr})"
+        )
+    return (
+        "t.table_type = 'BASE TABLE' "
+        "AND t.table_schema NOT IN ('pg_catalog', 'information_schema') "
+        "AND t.table_schema NOT LIKE 'pg\\_%' ESCAPE '\\'"
+    )
+
+
+def _is_schema_table_list_question(prompt: str) -> bool:
+    """
+    True for "list / show tables in schema" style questions. These are answered from
+    ``information_schema`` (or the in-memory schema snapshot), not the JSON SQL LLM.
+    """
+    if _is_tables_used_meta_question(prompt) or _is_schema_table_count_question(prompt):
+        return False
+    t = (prompt or "").lower()
+    if "table" not in t and "tables" not in t:
+        return False
+    if re.search(r"\b(rows|records)\b", t) and not re.search(r"\b(list|catalog|names)\b", t):
+        return False
+    phrases = (
+        "list tables",
+        "tables list",
+        "table list",
+        "list of tables",
+        "show tables",
+        "show all tables",
+        "what tables",
+        "which tables exist",
+        "which tables are in",
+        "schema tables",
+        "tables in schema",
+        "tables in this schema",
+        "tables in the schema",
+        "enumerate tables",
+        "table names",
+        "name of tables",
+        "catalog of tables",
+        "list the tables",
+    )
+    if any(p in t for p in phrases):
+        return True
+    if "list" in t and "table" in t and re.search(r"\b(schema|catalog|database|db)\b", t):
+        return True
+    if "show" in t and "table" in t and ("list" in t or "schema" in t):
+        return True
+    return False
+
+
+def _live_database_table_list_sql(selected_schemas: list[str], row_limit: int, offset: int) -> str:
+    """List BASE TABLE names from information_schema (paged)."""
+    wh = _information_schema_base_tables_where(selected_schemas)
+    lim = max(1, min(int(row_limit or 20), 5000))
+    off = max(0, int(offset or 0))
+    return (
+        "SELECT t.table_schema::text AS table_schema, t.table_name::text AS table_name "
+        "FROM information_schema.tables AS t "
+        f"WHERE {wh} "
+        "ORDER BY t.table_schema, t.table_name "
+        f"LIMIT {lim} OFFSET {off}"
+    )
+
+
+def _live_database_table_count_sql(selected_schemas: list[str]) -> str:
+    """COUNT base tables visible in PostgreSQL (scoped to activated schemas when set)."""
+    wh = _information_schema_base_tables_where(selected_schemas)
+    return (
+        "SELECT COUNT(*)::bigint AS number_of_tables "
+        "FROM information_schema.tables AS t "
+        f"WHERE {wh} "
+        "LIMIT 1 OFFSET 0"
+    )
+
+
+def _schema_table_count_meta_payload(
+    sess: dict[str, Any],
+    schema: dict,
+    session_id: str,
+    prompt: str,
+) -> dict:
+    """Real DB table count via information_schema when connected; else in-memory count."""
+    n_loaded = len((schema or {}).get("tables") or {})
+    live = bool(sess.get("execution_enabled")) and has_pool(session_id)
+    if live:
+        sch_list = list(sess.get("selected_schemas") or [])
+        sql = _live_database_table_count_sql(sch_list)
+        scope = (
+            f"schemas {', '.join(f'`{s}`' for s in sch_list)}"
+            if sch_list
+            else "all non-system schemas"
+        )
+        expl = (
+            f"Live count of BASE TABLE rows in information_schema for {scope} "
+            f"(not only the {n_loaded} table(s) currently loaded for NL→SQL retrieval)."
+        )
+    else:
+        sql = f"SELECT {int(n_loaded)}::bigint AS number_of_tables LIMIT 1 OFFSET 0"
+        expl = (
+            f"{n_loaded} table(s) are loaded in this session's schema snapshot (file or "
+            "in-memory). Connect and POST /db/activate to count tables directly in PostgreSQL."
+        )
+    return {
+        "sql": sql,
+        "explanation": (expl + f" — «{prompt.strip()[:100]}».")[:650],
+        "chart_suggestion": "kpi",
+        "viz_config": {
+            "x": None,
+            "y": "number_of_tables",
+            "color": None,
+            "title": "Table count",
+        },
+        "_meta_tables_used": ["information_schema.tables"] if live else [],
+    }
+
+
+def _schema_table_list_meta_payload(
+    sess: dict[str, Any],
+    schema: dict,
+    session_id: str,
+    prompt: str,
+    row_limit: int,
+    offset: int,
+) -> dict:
+    """Paged table catalog from information_schema when live; else activated keys only."""
+    raw_keys = sorted((schema or {}).get("tables") or ())
+    n_loaded = len(raw_keys)
+    keys = raw_keys or ["(no tables in loaded schema)"]
+    live = bool(sess.get("execution_enabled")) and has_pool(session_id)
+    lim = max(1, min(int(row_limit or 20), 5000))
+    off = max(0, int(offset or 0))
+    if live:
+        sch_list = list(sess.get("selected_schemas") or [])
+        sql = _live_database_table_list_sql(sch_list, lim, off)
+        scope = (
+            f"schemas {', '.join(f'`{s}`' for s in sch_list)}"
+            if sch_list
+            else "all non-system schemas"
+        )
+        expl = (
+            f"Tables in PostgreSQL ({scope}) from information_schema — "
+            f"paged (LIMIT {lim} OFFSET {off}). NL→SQL still uses your **{n_loaded}** activated table(s) for generation."
+        )
+        meta_used = ["information_schema.tables"]
+    else:
+        lit = ",".join("'" + str(k).replace("'", "''") + "'" for k in keys[:500])
+        sql = (
+            f"SELECT u::text AS table_key FROM unnest(ARRAY[{lit}]::text[]) AS u "
+            f"ORDER BY 1 LIMIT {lim} OFFSET {off}"
+        )
+        expl = (
+            f"{n_loaded} table key(s) in this session's loaded schema (file / in-memory snapshot). "
+            "Connect and activate on PostgreSQL for a live information_schema listing."
+        )
+        meta_used = []
+    return {
+        "sql": sql,
+        "explanation": (expl + f" — «{prompt.strip()[:100]}».")[:700],
+        "chart_suggestion": "table",
+        "viz_config": {
+            "x": "table_schema" if live else "table_key",
+            "y": None,
+            "color": None,
+            "title": "Tables in schema",
+        },
+        "_meta_tables_used": meta_used,
+    }
+
+
+def _tables_used_meta_payload(
+    prompt: str,
+    history: list[dict],
+    schema: dict,
+    selected_tables: list[str],
+    row_limit: int,
+    offset: int,
+) -> dict:
+    """Deterministic SQL + explanation so the UI can run and show table names."""
+    last_sql = _last_assistant_sql(history)
+    if last_sql:
+        names = canonical_tables_referenced_in_sql(last_sql, schema)
+        basis = "the last SQL returned in this chat"
+    else:
+        names = list(dict.fromkeys(selected_tables))
+        basis = "the current retrieval scope (no prior assistant SQL in this chat yet)"
+    if not names:
+        names = ["(none resolved)"]
+    lit = ", ".join("'" + str(n).replace("'", "''") + "'" for n in names[:80])
+    lim = max(1, min(int(row_limit or 20), 1000))
+    off = max(0, int(offset or 0))
+    # ARRAY + unnest keeps one shape for any row count. (Plain ``UNION ALL SELECT``
+    # trips the read-only SQL anti-injection rule that blocks ``UNION … SELECT``.)
+    sql = (
+        f"SELECT u AS table_name FROM unnest(ARRAY[{lit}]::text[]) "
+        f"AS u LIMIT {lim} OFFSET {off}"
+    )
+    listed = ", ".join(f"`{n}`" for n in names[:36]) + (" …" if len(names) > 36 else "")
+    expl = (
+        f"Answer to «{prompt.strip()[:120]}»: based on {basis}, these tables apply: {listed}."
+    )
+    return {
+        "sql": sql,
+        "explanation": expl[:600],
+        "chart_suggestion": "table",
+        "viz_config": {
+            "x": "table_name",
+            "y": None,
+            "color": None,
+            "title": "Tables used",
+        },
+        "_meta_tables_used": names,
+    }
+
+
+# ── Pydantic models ────────────────────────────────────────────────────────────
+
+
+class DbConnectBody(BaseModel):
+    session_id: str
+    host: str
+    port: int = 5432
+    username: str
+    password: str
+    catalog_database: Optional[str] = None
+
+    @field_validator("catalog_database", "username", "host")
+    @classmethod
+    def strip_s(cls, v: str | None) -> str | None:
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("port")
+    @classmethod
+    def port_ok(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("port must be 1–65535")
+        return v
+
+
+class DbUseDatabaseBody(BaseModel):
+    session_id: str
+    database: str
+
+    @field_validator("database")
+    @classmethod
+    def db_strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("database must not be empty")
+        return v
+
+
+class TableIdent(BaseModel):
+    """JSON still uses ``schema`` — not ``schema_name`` — to avoid shadowing ``BaseModel.schema``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_name: str = Field(validation_alias="schema", serialization_alias="schema")
+    name: str
+
+    @field_validator("schema_name", "name")
+    @classmethod
+    def ident(cls, v: str) -> str:
+        return validate_pg_identifier(v)
+
+
+class DbActivateBody(BaseModel):
+    session_id: str
+    database: str
+    tables: list[TableIdent]
+
+    @field_validator("database")
+    @classmethod
+    def db_strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("database must not be empty")
+        return v
+
+    @field_validator("tables")
+    @classmethod
+    def tables_non_empty(cls, v: list) -> list:
+        if not v:
+            raise ValueError("Select at least one table.")
+        if len(v) > 500:
+            raise ValueError("Too many tables (max 500).")
+        return v
+
 
 class QueryRequest(BaseModel):
-    prompt:     str
-    session_id: Optional[str] = "default"
-    top_k:      Optional[int] = 3
-    row_limit:  Optional[int] = 20    # default rows returned per page
-    offset:     Optional[int] = 0     # pagination offset (0 = first page)
+    prompt: str
+    session_id: Optional[str] = None
+    top_k: Optional[int] = 3
+    row_limit: Optional[int] = 20
+    offset: Optional[int] = 0
 
     @field_validator("prompt")
     @classmethod
-    def prompt_must_be_valid(cls, v: str) -> str:
+    def prompt_ok(cls, v: str) -> str:
         v = v.strip()
         if len(v) < 3:
             raise ValueError("Prompt is too short (minimum 3 characters).")
@@ -321,82 +951,98 @@ class QueryRequest(BaseModel):
 
     @field_validator("top_k")
     @classmethod
-    def top_k_must_be_valid(cls, v: int) -> int:
+    def top_k_ok(cls, v: int) -> int:
         if v is not None and not (1 <= v <= 10):
             raise ValueError("top_k must be between 1 and 10.")
         return v
 
     @field_validator("row_limit")
     @classmethod
-    def row_limit_must_be_valid(cls, v: int) -> int:
+    def rl_ok(cls, v: int) -> int:
         if v is not None and not (1 <= v <= 1000):
             raise ValueError("row_limit must be between 1 and 1000.")
         return v
 
     @field_validator("offset")
     @classmethod
-    def offset_must_be_valid(cls, v: int) -> int:
+    def off_ok(cls, v: int) -> int:
         if v is not None and v < 0:
             raise ValueError("offset must be 0 or greater.")
         return v
 
+
 class QueryResponse(BaseModel):
-    sql:              str
-    explanation:      str
+    sql: str
+    explanation: str
     chart_suggestion: str
-    viz_config:       Optional[dict] = None
-    columns:          list[str]
-    rows:             list[dict]
-    row_count:        int
-    total_count:      int
-    has_more:         bool
-    execution_ms:     int
-    tables_used:      list[str]
+    viz_config: Optional[dict] = None
+    columns: list[str]
+    rows: list[dict]
+    row_count: int
+    total_count: int
+    has_more: bool
+    execution_ms: int
+    tables_used: list[str]
+    execution_skipped: bool = False
+
 
 class PageRequest(BaseModel):
-    sql:       str
-    page:      Optional[int] = 1
+    sql: str
+    session_id: str
+    page: Optional[int] = 1
     page_size: Optional[int] = 500
 
     @field_validator("sql")
     @classmethod
-    def sql_must_be_present(cls, v: str) -> str:
+    def sql_ok(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("sql field must not be empty.")
         return v.strip()
 
+    @field_validator("session_id")
+    @classmethod
+    def sid(cls, v: str) -> str:
+        if not (v or "").strip():
+            raise ValueError("session_id is required.")
+        return v.strip()
+
+
 class PageResponse(BaseModel):
-    columns:      list[str]
-    rows:         list[dict]
-    row_count:    int
-    total_count:  int
-    page:         int
-    page_size:    int
-    total_pages:  int
-    has_next:     bool
-    has_prev:     bool
+    columns: list[str]
+    rows: list[dict]
+    row_count: int
+    total_count: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_next: bool
+    has_prev: bool
     execution_ms: int
 
+
 class ImportRequest(BaseModel):
+    session_id: str
     table_name: str
-    query:      str
-    api_url:    Optional[str] = None   # defaults to REMOTE_API_URL in .env
+    query: str
+    sync_schema: str
+    api_url: Optional[str] = None
 
     @field_validator("table_name")
     @classmethod
-    def validate_table_name(cls, v: str) -> str:
-        import re as _re
+    def tn(cls, v: str) -> str:
         v = v.strip().lower()
-        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$", v):
-            raise ValueError(
-                "Table name must start with a letter/underscore and contain "
-                "only letters, digits, or underscores (max 63 chars)."
-            )
+        if not _ID_RE.match(v):
+            raise ValueError("Invalid table_name.")
         return v
+
+    @field_validator("sync_schema")
+    @classmethod
+    def ss(cls, v: str) -> str:
+        return validate_pg_identifier(v)
 
     @field_validator("query")
     @classmethod
-    def validate_query(cls, v: str) -> str:
+    def q(cls, v: str) -> str:
         v = v.strip()
         if not v:
             raise ValueError("Query must not be empty.")
@@ -406,32 +1052,32 @@ class ImportRequest(BaseModel):
 
 
 class SyncRequest(BaseModel):
-    """
-    Sync multiple tables from the remote API in one call.
-    tables    — list of table names to sync (from uploaded schema JSON)
-    row_limit — rows to fetch per table (default 1000; 0 = no limit / all rows)
-    api_url   — optional override for the remote API URL
-    """
-    tables:    list[str]
+    session_id: str
+    tables: list[str]
+    sync_schema: str
     row_limit: Optional[int] = 1000
-    api_url:   Optional[str] = None
+    api_url: Optional[str] = None
 
     @field_validator("tables")
     @classmethod
-    def validate_tables(cls, v: list) -> list:
-        import re as _re
-        bad = [t for t in v if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$", str(t).strip())]
+    def tbls(cls, v: list) -> list:
+        bad = [t for t in v if not _ID_RE.match(str(t).strip())]
         if bad:
             raise ValueError(f"Invalid table name(s): {bad}")
         if len(v) > 50:
             raise ValueError("Cannot sync more than 50 tables at once.")
         return [str(t).strip().lower() for t in v]
 
+    @field_validator("sync_schema")
+    @classmethod
+    def ss(cls, v: str) -> str:
+        return validate_pg_identifier(v)
+
     @field_validator("row_limit")
     @classmethod
-    def validate_row_limit(cls, v: int) -> int:
-        if v is not None and not (1 <= v <= 10000):
-            raise ValueError("row_limit must be between 1 and 10000.")
+    def rl(cls, v: int) -> int:
+        if v is not None and not (0 <= v <= 10000):
+            raise ValueError("row_limit must be 0–10000.")
         return v
 
 
@@ -523,48 +1169,444 @@ class SignInResponse(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+class ReloadBody(BaseModel):
+    session_id: str
+
+
+# ── DB endpoints ───────────────────────────────────────────────────────────────
+
+
+@app.post("/db/connect")
+@limiter.limit("30/minute")
+def db_connect(request: Request, body: DbConnectBody):
+    """
+    Open a pooled read-only connection. ``catalog_database`` is the initial
+    PostgreSQL database to attach to (to list other databases). If omitted,
+    the server uses ``username`` as the database name (common PostgreSQL default).
+    """
+    sid = body.session_id.strip()
+    initial_db = (body.catalog_database or body.username).strip()
+    if not initial_db:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide catalog_database or a non-empty username to derive the initial database name.",
+        )
+    creds = PgCredentials(
+        host=body.host,
+        port=body.port,
+        user=body.username,
+        password=body.password,
+        database=initial_db,
+    )
+    try:
+        names = list_database_names(creds)
+    except Exception as e:
+        log.warning("db_connect failed: %s", e)
+        raise HTTPException(status_code=400, detail=f"Connection failed: {e}") from e
+
+    close_pool(sid)
+    register_pool(sid, creds, read_only=True)
+    sess = _ensure_nl(sid)
+    sess["credentials"] = creds
+    sess["database"] = creds.database
+    return {
+        "status": "connected",
+        "database": creds.database,
+        "databases": names,
+    }
+
+
+@app.post("/db/use-database")
+@limiter.limit("30/minute")
+def db_use_database(request: Request, body: DbUseDatabaseBody):
+    sid = body.session_id.strip()
+    sess = _get_nl(sid)
+    if not sess or not sess.get("credentials"):
+        raise HTTPException(status_code=400, detail="Connect with POST /db/connect first.")
+    c = sess["credentials"]
+    creds = PgCredentials(
+        host=c.host,
+        port=c.port,
+        user=c.user,
+        password=c.password,
+        database=body.database.strip(),
+    )
+    try:
+        list_schema_names(creds)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot open database: {e}") from e
+
+    close_pool(sid)
+    register_pool(sid, creds, read_only=True)
+    sess["credentials"] = creds
+    sess["database"] = creds.database
+    return {"status": "ok", "database": creds.database}
+
+
+@app.get("/db/schemas")
+@limiter.limit("60/minute")
+def db_list_schemas(request: Request, session_id: str):
+    sid = session_id.strip()
+    sess = _get_nl(sid)
+    if not sess or not sess.get("credentials"):
+        raise HTTPException(status_code=400, detail="No connection for this session_id.")
+    try:
+        names = list_schema_names(sess["credentials"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"schemas": names}
+
+
+@app.get("/db/tables")
+@limiter.limit("60/minute")
+def db_list_tables(request: Request, session_id: str, schemas: str = ""):
+    """Comma-separated schema names; empty = all non-system schemas visible to the user."""
+    sid = session_id.strip()
+    if not has_pool(sid):
+        raise HTTPException(status_code=400, detail="No connection for this session_id.")
+    allow = [validate_pg_identifier(s) for s in schemas.split(",") if s.strip()] or None
+
+    pairs = get_tables(sid, allowed_schemas=allow)
+    grouped: dict[str, list[str]] = {}
+    for sch, tbl in pairs:
+        grouped.setdefault(sch, []).append(tbl)
+    for sch in grouped:
+        grouped[sch].sort()
+    return {"tables_by_schema": grouped, "flat": [{"schema": a, "name": b} for a, b in pairs]}
+
+
+@app.post("/db/activate")
+@limiter.limit("10/minute")
+def db_activate(request: Request, body: DbActivateBody):
+    """Load metadata + embeddings for the selected tables (live database)."""
+    sid = body.session_id.strip()
+    if not has_pool(sid):
+        raise HTTPException(status_code=400, detail="Connect with POST /db/connect first.")
+    sess = _ensure_nl(sid)
+    creds = sess.get("credentials")
+    if not creds or creds.database.strip() != body.database.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="database does not match the active connection. Call /db/use-database first.",
+        )
+    pairs = [(t.schema_name, t.name) for t in body.tables]
+    sch_set = sorted({p[0] for p in pairs})
+    try:
+        schema = extract_full_schema(sid, allowed_schemas=sch_set, only_tables=pairs)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    _rebuild_nl_state(sid, schema)
+    sess["execution_enabled"] = True
+    sess["source"] = "live"
+    sess["logical_database_name"] = creds.database
+    sess["selected_schemas"] = sch_set
+    sess["selected_pairs"] = pairs
+    cache_clear()
+    return {
+        "status": "active",
+        "database": creds.database,
+        "table_count": len(schema.get("tables", {})),
+        "tables": list(schema.get("tables", {}).keys()),
+    }
+
+
+@app.post("/schema/from-file")
+@limiter.limit("10/minute")
+async def schema_from_file_upload(
+    request: Request,
+    session_id: str = Form(...),
+    database_name: str = Form(...),
+    file: UploadFile = File(...),
+    keep_connection: str = Form("false"),
+    materialize: str = Form("false"),
+    target_database: str = Form(""),
+    remote_data_url: str = Form(""),
+    remote_row_limit: str = Form("5000"),
+):
+    """
+    Upload a JSON schema (tables + columns).
+
+    - Default: load in-memory for NL→SQL; execution off unless you connect and activate.
+    - ``keep_connection``: keep a prior ``/db/connect`` pool and credentials.
+    - ``materialize``: create ``target_database`` (or ``database_name``) on the server,
+      run DDL from the JSON, reconnect the pool to that DB, reload metadata, enable execution.
+      Requires ``keep_connection`` and an active session with credentials.
+    - ``remote_data_url``: optional SQL passthrough API (POST JSON ``{"query":"SELECT …"}``).
+      After materializing, fetches each table from the remote API and upserts into PostgreSQL.
+    """
+    sid = session_id.strip()
+    _kc = (keep_connection or "").strip().lower() in ("true", "1", "yes", "on")
+    _mat = (materialize or "").strip().lower() in ("true", "1", "yes", "on")
+    _target = (target_database or database_name or "").strip()
+    raw = await file.read()
+    try:
+        data = _json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+    try:
+        schema, skipped_tables = schema_from_uploaded_json(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return _schema_upload_core(
+        None,
+        sid,
+        database_name.strip(),
+        schema,
+        skipped_tables,
+        _kc,
+        _mat,
+        _target,
+        remote_data_url,
+        remote_row_limit,
+    )
+
+
+def _schema_job_worker(
+    job_id: str,
+    sid: str,
+    database_name: str,
+    raw: bytes,
+    _kc: bool,
+    _mat: bool,
+    _target: str,
+    remote_data_url: str,
+    remote_row_limit: str,
+) -> None:
+    try:
+        data = _json.loads(raw.decode("utf-8"))
+        schema, skipped_tables = schema_from_uploaded_json(data)
+    except Exception as e:
+        with _schema_upload_jobs_lock:
+            j = _schema_upload_jobs.get(job_id)
+            if j:
+                j["status"] = "error"
+                j["error"] = str(e)
+                j["phase"] = "error"
+        return
+
+    with _schema_upload_jobs_lock:
+        j = _schema_upload_jobs.get(job_id)
+        if j:
+            j["status"] = "running"
+            j["phase"] = "running"
+            j["message"] = "Applying schema…"
+
+    try:
+        result = _schema_upload_core(
+            job_id,
+            sid,
+            database_name,
+            schema,
+            skipped_tables,
+            _kc,
+            _mat,
+            _target,
+            remote_data_url,
+            remote_row_limit,
+        )
+        with _schema_upload_jobs_lock:
+            j = _schema_upload_jobs.get(job_id)
+            if j:
+                j["status"] = "done"
+                j["phase"] = "done"
+                j["result"] = result
+                j["message"] = "Finished"
+    except HTTPException as he:
+        detail = he.detail
+        if not isinstance(detail, str):
+            detail = str(detail)
+        with _schema_upload_jobs_lock:
+            j = _schema_upload_jobs.get(job_id)
+            if j:
+                j["status"] = "error"
+                j["error"] = detail
+                j["phase"] = "error"
+    except Exception as e:
+        log.exception("schema job %s", job_id)
+        with _schema_upload_jobs_lock:
+            j = _schema_upload_jobs.get(job_id)
+            if j:
+                j["status"] = "error"
+                j["error"] = str(e)
+                j["phase"] = "error"
+
+
+class SchemaUploadJobControlBody(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    action: str = Field(..., description="cancel, pause, or resume")
+
+
+@app.post("/schema/from-file/async")
+@limiter.limit("10/minute")
+async def schema_from_file_upload_async(
+    request: Request,
+    session_id: str = Form(...),
+    database_name: str = Form(...),
+    file: UploadFile = File(...),
+    keep_connection: str = Form("false"),
+    materialize: str = Form("false"),
+    target_database: str = Form(""),
+    remote_data_url: str = Form(""),
+    remote_row_limit: str = Form("5000"),
+):
+    """
+    Same inputs as ``/schema/from-file``, but returns immediately with a ``job_id``.
+    Poll ``GET /schema/from-file/job/{job_id}`` and use ``POST .../control`` to
+    cancel / pause / resume (pause applies between remote table syncs).
+    """
+    sid = session_id.strip()
+    _kc = (keep_connection or "").strip().lower() in ("true", "1", "yes", "on")
+    _mat = (materialize or "").strip().lower() in ("true", "1", "yes", "on")
+    _target = (target_database or database_name or "").strip()
+    raw = await file.read()
+
+    job_id = str(uuid.uuid4())
+    with _schema_upload_jobs_lock:
+        _schema_upload_jobs[job_id] = {
+            "session_id": sid,
+            "status": "queued",
+            "phase": "queued",
+            "message": "Queued",
+            "sync_current": 0,
+            "sync_total": 0,
+            "current_table": None,
+            "cancel": threading.Event(),
+            "pause": threading.Event(),
+            "result": None,
+            "error": None,
+        }
+
+    t = threading.Thread(
+        target=_schema_job_worker,
+        args=(
+            job_id,
+            sid,
+            database_name.strip(),
+            raw,
+            _kc,
+            _mat,
+            _target,
+            remote_data_url,
+            remote_row_limit,
+        ),
+        daemon=True,
+    )
+    t.start()
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "poll": f"/schema/from-file/job/{job_id}",
+    }
+
+
+@app.get("/schema/from-file/job/{job_id}")
+@limiter.limit("120/minute")
+def schema_upload_job_status(request: Request, job_id: str, session_id: str):
+    """Return job status; ``session_id`` must match the job owner."""
+    sid = (session_id or "").strip()
+    with _schema_upload_jobs_lock:
+        job = _schema_upload_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    if job["session_id"] != sid:
+        raise HTTPException(status_code=403, detail="session_id does not match this job")
+    out = {
+        "job_id": job_id,
+        "status": job["status"],
+        "phase": job["phase"],
+        "message": job.get("message"),
+        "sync_current": job.get("sync_current", 0),
+        "sync_total": job.get("sync_total", 0),
+        "current_table": job.get("current_table"),
+        "paused": job["pause"].is_set(),
+    }
+    if job["status"] == "done" and job.get("result") is not None:
+        out["result"] = job["result"]
+    if job["status"] == "error" and job.get("error"):
+        out["error"] = job["error"]
+    return out
+
+
+@app.post("/schema/from-file/job/{job_id}/control")
+@limiter.limit("60/minute")
+def schema_upload_job_control(
+    request: Request, job_id: str, body: SchemaUploadJobControlBody
+):
+    """Cancel, pause, or resume a background schema upload job."""
+    sid = body.session_id.strip()
+    action = (body.action or "").strip().lower()
+    if action not in ("cancel", "pause", "resume"):
+        raise HTTPException(
+            status_code=400,
+            detail='action must be "cancel", "pause", or "resume"',
+        )
+    with _schema_upload_jobs_lock:
+        job = _schema_upload_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    if job["session_id"] != sid:
+        raise HTTPException(status_code=403, detail="session_id does not match this job")
+
+    if action == "cancel":
+        job["cancel"].set()
+        return {"ok": True, "action": "cancel", "detail": "Stop requested (applies between tables)."}
+    if action == "pause":
+        job["pause"].set()
+        return {"ok": True, "action": "pause", "detail": "Pause requested (applies between tables)."}
+    job["pause"].clear()
+    return {"ok": True, "action": "resume", "detail": "Resume syncing."}
+
+
+# ── Health / schema views ──────────────────────────────────────────────────────
+
 
 @app.get("/health")
 @limiter.exempt
-def health(request: Request):
-    tables      = list(app_state.get("schema", {}).get("tables", {}).keys())
-    db_name     = os.getenv("DB_NAME", "")
-    scan_desc   = schema_scan_description()
-    sync_s      = get_sync_target_schema()
-    has_tables  = len(tables) > 0
+def health(request: Request, session_id: Optional[str] = None):
+    sid = (session_id or "").strip()
+    if not sid:
+        return {
+            "status": "ok",
+            "message": "Provide ?session_id= to see NL→SQL session status.",
+        }
+    s = _get_nl(sid)
+    if not s:
+        return {
+            "status": "ok",
+            "session_id": sid,
+            "activated": False,
+            "has_tables": False,
+        }
+    tables = list(s.get("schema", {}).get("tables", {}).keys())
     return {
-        "status":       "ok",
-        "has_tables":   has_tables,
-        "table_count":  len(tables),
+        "status": "ok",
+        "session_id": sid,
+        "activated": bool(s.get("retriever")),
+        "has_tables": len(tables) > 0,
+        "table_count": len(tables),
         "tables_loaded": tables,
-        "db_name":      db_name,
-        # NL→SQL metadata scan (empty DB_SCHEMAS = all non-system schemas)
-        "db_schema_scan": scan_desc,
-        # Importer CREATE / GRANT target (see DB_SYNC_SCHEMA)
-        "db_sync_schema": sync_s,
-        # Backward-compatible alias for UIs that expect db_schemas
-        "db_schemas":   scan_desc,
-        # Clear message for the UI to display when no tables exist
-        "empty_message": (
-            None if has_tables else
-            f"No tables visible to DB_USER in database {db_name!r} "
-            f"(metadata scan: {scan_desc}; importer/sync schema: {sync_s!r}). "
-            "Align DB_* with pgAdmin, include every schema that holds tables in DB_SCHEMAS, "
-            "set DB_SYNC_SCHEMA where imports create tables, then click 🔄 Reload DB."
-        ),
+        "database": s.get("logical_database_name") or s.get("database"),
+        "execution_enabled": s.get("execution_enabled", False),
+        "db_schema_scan": schema_scan_description(s.get("selected_schemas") or None),
+        "source": s.get("source"),
+        "empty_message": None if tables else "Activate a session (POST /db/activate or /schema/from-file).",
     }
 
 
 @app.get("/schema")
 @limiter.limit("30/minute")
-def get_schema(request: Request):
-    """Returns the full schema metadata (columns, FKs, sample rows)."""
-    schema = app_state.get("schema", {})
-    # strip sample rows for brevity
+def get_schema(request: Request, session_id: str):
+    sid = session_id.strip()
+    s = _get_nl(sid)
+    if not s:
+        raise HTTPException(status_code=400, detail="Unknown session_id.")
+    schema = s.get("schema", {})
     clean = {}
     for t, meta in schema.get("tables", {}).items():
         clean[t] = {
-            "columns":      meta["columns"],
+            "columns": meta["columns"],
             "foreign_keys": meta["foreign_keys"],
         }
     return clean
@@ -572,31 +1614,25 @@ def get_schema(request: Request):
 
 @app.get("/schema/tables")
 @limiter.limit("60/minute")
-def get_schema_tables(request: Request):
-    """
-    Returns a lightweight summary of every loaded table — used by the
-    sidebar Schema Browser for instant client-side search.
-    Each entry: { name, schema_name, column_count, columns: [name, type, is_pk], row_estimate }
-    """
-    schema = app_state.get("schema", {})
+def get_schema_tables(request: Request, session_id: str):
+    s = _get_nl(session_id.strip())
+    if not s:
+        raise HTTPException(status_code=400, detail="Unknown session_id.")
+    schema = s.get("schema", {})
     result = []
     for key, meta in schema.get("tables", {}).items():
         cols = meta.get("columns", [])
         result.append({
-            "name":         key,                         # "table" or "schema.table"
-            "schema_name":  meta.get("schema_name", "public"),
-            "table_name":   meta.get("table_name", key),
+            "name": key,
+            "schema_name": meta.get("schema_name", ""),
+            "table_name": meta.get("table_name", key),
             "column_count": len(cols),
             "columns": [
-                {
-                    "name":  c["column_name"],
-                    "type":  c["data_type"],
-                    "is_pk": c.get("is_primary_key", False),
-                }
-                for c in cols[:20]          # first 20 columns for display
+                {"name": c["column_name"], "type": c["data_type"], "is_pk": c.get("is_primary_key", False)}
+                for c in cols[:20]
             ],
-            "fk_count":     len(meta.get("foreign_keys", [])),
-            "has_sample":   bool(meta.get("sample_rows")),
+            "fk_count": len(meta.get("foreign_keys", [])),
+            "has_sample": bool(meta.get("sample_rows")),
         })
     result.sort(key=lambda x: x["name"])
     return {"tables": result, "total": len(result)}
@@ -604,13 +1640,12 @@ def get_schema_tables(request: Request):
 
 @app.get("/suggest-prompts")
 @limiter.limit("30/minute")
-def suggest_prompts_endpoint(request: Request, last_query: str = ""):
-    """
-    Returns 6 dynamic example prompts based on the live DB schema.
-    If last_query is provided, 3 of them are follow-ups to that question.
-    """
-    table_catalog = app_state.get("table_catalog", "")
-    prompts = suggest_prompts(table_catalog, last_query)
+def suggest_prompts_endpoint(request: Request, session_id: str, last_query: str = ""):
+    s = _get_nl(session_id.strip())
+    if not s:
+        raise HTTPException(status_code=400, detail="Unknown session_id.")
+    tc = s.get("table_catalog") or ""
+    prompts = suggest_prompts(tc, last_query)
     return {"prompts": prompts}
 
 
@@ -708,16 +1743,23 @@ def signin_endpoint(request: Request, req: SignInRequest):
 @app.post("/generate-sql", response_model=QueryResponse)
 @limiter.limit("10/minute")
 def generate_sql_endpoint(request: Request, req: QueryRequest):
-    schema        = app_state["schema"]
-    descriptions  = app_state["descriptions"]
-    table_catalog = app_state["table_catalog"]
-    retriever: SchemaRetriever = app_state["retriever"]
-    all_tables    = list(schema["tables"].keys())
+    sid = (req.session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id is required in the JSON body.")
+    s = _get_nl(sid)
+    if not s or not s.get("retriever"):
+        raise HTTPException(
+            status_code=400,
+            detail="No activated schema for this session. Use POST /db/activate or /schema/from-file first.",
+        )
 
-    # ── Step 1: Load chat history FIRST (needed for follow-up context) ──────────
-    history = sessions.get(req.session_id, [])
+    schema = s["schema"]
+    descriptions = s["descriptions"]
+    table_catalog = s["table_catalog"]
+    retriever: SchemaRetriever = s["retriever"]
+    all_tables = list(schema["tables"].keys())
 
-    # Build a context string from the last user turn for the table agent
+    history = sessions.get(sid, [])
     prior_context = ""
     for turn in reversed(history[-4:]):
         if turn["role"] == "user":
@@ -728,130 +1770,190 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
         if prior_context else req.prompt
     )
 
-    # ── Step 2: Table selection — fast path vs LLM agent ─────────────────────
-    # Small schemas (≤ threshold): FAISS is instant (~5 ms).
-    # Large schemas: LLM agent reads full catalog and reasons (~1–2 s extra).
+    top_k = inferred_top_k_for_query(req.prompt, req.top_k or 3)
+
     if len(all_tables) <= _AGENT_TABLE_THRESHOLD:
         selected_tables = retriever.retrieve_with_fk_expansion(
-            req.prompt, schema, top_k=req.top_k
+            req.prompt, schema, top_k=top_k
         )
-        log.info(f"[{req.session_id}] FAISS (fast path, {len(all_tables)} tables): {selected_tables}")
+        log.info(
+            "[%s] FAISS (%s tables, top_k=%s): %s",
+            sid[:8],
+            len(all_tables),
+            top_k,
+            selected_tables,
+        )
     else:
         selected_tables = select_tables_agent(
-            user_query      = agent_query,
-            table_catalog   = table_catalog,
-            all_table_names = all_tables,
+            user_query=agent_query,
+            table_catalog=table_catalog,
+            all_table_names=all_tables,
         )
-        log.info(f"[{req.session_id}] Agent selected: {selected_tables}")
         if not selected_tables:
             selected_tables = retriever.retrieve_with_fk_expansion(
-                req.prompt, schema, top_k=req.top_k
+                req.prompt, schema, top_k=top_k
             )
-            log.info(f"[{req.session_id}] FAISS fallback: {selected_tables}")
 
-    # ── Auto-expand via FK relationships ─────────────────────────────────────
-    fk_expanded = set(selected_tables)
-    for table in list(fk_expanded):
-        for fk in schema["tables"].get(table, {}).get("foreign_keys", []):
-            fk_expanded.add(fk["foreign_table"])
-    selected_tables = list(fk_expanded)
-    log.info(f"[{req.session_id}] Final tables: {selected_tables}")
+    selected_tables = expand_selected_tables_for_nl_query(
+        req.prompt, selected_tables, schema
+    )
+    selected_tables = fk_expand_seed_tables(selected_tables, schema)
 
-    # ── Step 3: LLM response cache check ─────────────────────────────────────
-    # Identical question + same set of tables → return cached result instantly.
-    table_fp  = ",".join(sorted(selected_tables))
-    cache_key = _llm_cache_key(req.prompt, table_fp)
-    cached    = _llm_cache_get(cache_key)
-    if cached:
-        log.info(f"[{req.session_id}] LLM cache HIT — skipping Gemini call")
-        llm_result = cached
+    table_fp = ",".join(sorted(selected_tables))
+    ckey = _llm_cache_key(req.prompt, table_fp)
+    repair_hint: str | None = None
+    llm_result: dict = {}
+    cached_used = False
+
+    meta_tables_reply = _is_tables_used_meta_question(req.prompt)
+    meta_schema_list = _is_schema_table_list_question(req.prompt)
+    meta_schema_count = _is_schema_table_count_question(req.prompt)
+    if meta_tables_reply:
+        llm_result = _tables_used_meta_payload(
+            req.prompt, history, schema, selected_tables, req.row_limit or 20, req.offset or 0,
+        )
+        cached_used = True
+        log.info("[%s] Meta reply (tables used) — skipping LLM SQL generation.", sid[:8])
+    elif meta_schema_list:
+        llm_result = _schema_table_list_meta_payload(
+            s, schema, sid, req.prompt, req.row_limit or 20, req.offset or 0,
+        )
+        cached_used = True
+        log.info("[%s] Meta reply (schema table list) — skipping LLM SQL generation.", sid[:8])
+    elif meta_schema_count:
+        llm_result = _schema_table_count_meta_payload(s, schema, sid, req.prompt)
+        cached_used = True
+        log.info("[%s] Meta reply (schema table count) — skipping LLM SQL generation.", sid[:8])
     else:
-        try:
-            llm_result = generate_sql(
-                user_query         = req.prompt,
-                selected_tables    = selected_tables,
-                table_descriptions = descriptions,
-                schema             = schema,
-                chat_history       = history,
-                row_limit          = req.row_limit or 20,
-                offset             = req.offset or 0,
-            )
-        except genai_errors.ClientError as e:
-            code = getattr(e, "status_code", None)
-            if code == 429 or "RESOURCE_EXHAUSTED" in str(e).upper():
-                log.warning("[%s] Gemini rate limit after retries: %s", req.session_id, e)
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "Google Gemini returned HTTP 429 (quota / rate limit). "
-                        "Wait a short time and try again, or spread out requests. "
-                        "See https://ai.google.dev/gemini-api/docs/rate-limits — "
-                        f"Technical detail: {e}"
-                    ),
+        for attempt in range(2):
+            use_cache = attempt == 0 and not repair_hint
+            cached = _llm_cache_get(ckey) if use_cache else None
+            if cached is not None:
+                llm_result = cached
+                cached_used = True
+            else:
+                try:
+                    llm_result = generate_sql(
+                        user_query=req.prompt,
+                        selected_tables=selected_tables,
+                        table_descriptions=descriptions,
+                        schema=schema,
+                        chat_history=history,
+                        row_limit=req.row_limit or 20,
+                        offset=req.offset or 0,
+                        repair_hint=repair_hint,
+                    )
+                except genai_errors.ClientError as e:
+                    code = getattr(e, "status_code", None)
+                    if code == 429 or "RESOURCE_EXHAUSTED" in str(e).upper():
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Google Gemini rate limit (429). Wait and retry. "
+                                f"Technical: {e}"
+                            ),
+                        ) from e
+                    raise
+                except ValueError as e:
+                    raise HTTPException(status_code=502, detail=str(e)) from e
+                cached_used = False
+
+            sql = (llm_result.get("sql") or "").strip()
+            sql = fix_postgresql_mixed_case_identifiers(sql, schema)
+
+            try:
+                sql = validate_sql(sql)
+            except SQLValidationError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
+            try:
+                validate_sql_tables_against_schema(sql, schema)
+            except SQLValidationError as e:
+                _llm_cache_pop(ckey)
+                if cached_used:
+                    log.warning(
+                        "[%s] Cached SQL failed schema-table validation; regenerating.",
+                        sid[:8],
+                    )
+                if attempt >= 1:
+                    raise HTTPException(status_code=400, detail=str(e)) from e
+                bad = unknown_tables_in_sql(sql, schema)
+                allow = ", ".join(f"`{t}`" for t in sorted(all_tables)[:72])
+                if len(all_tables) > 72:
+                    allow += ", …"
+                repair_hint = (
+                    f"{e} Regenerate correct SQL for the same user question. "
+                    f"These table names are NOT in the database and must NOT appear: "
+                    f"{', '.join(f'`{b}`' for b in bad)}. "
+                    f"Use ONLY these relations in FROM/JOIN: {allow}"
                 )
-            raise
-        except ValueError as e:
-            log.warning("[%s] LLM output could not be parsed: %s", req.session_id, e)
-            raise HTTPException(
-                status_code=502,
-                detail=str(e),
-            )
-        _llm_cache_set(cache_key, llm_result)
-        log.info(f"[{req.session_id}] LLM cache SET")
+                continue
 
-    sql              = llm_result["sql"]
-    explanation      = llm_result.get("explanation", "")
+            if not cached_used:
+                _llm_cache_set(ckey, llm_result)
+            break
+
+    if meta_tables_reply or meta_schema_count or meta_schema_list:
+        sql = (llm_result.get("sql") or "").strip()
+        sql = fix_postgresql_mixed_case_identifiers(sql, schema)
+        try:
+            sql = validate_sql(sql)
+        except SQLValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        # Skip validate_sql_tables_against_schema for trusted meta SQL (unnest /
+        # information_schema are not keys in the activated schema dict).
+
+    explanation = llm_result.get("explanation", "")
     chart_suggestion = llm_result.get("chart_suggestion", "table")
-    viz_config       = llm_result.get("viz_config") or {}
+    viz_config = llm_result.get("viz_config") or {}
+    meta_names = llm_result.get("_meta_tables_used")
+    if (
+        (meta_tables_reply or meta_schema_count or meta_schema_list)
+        and isinstance(meta_names, list)
+        and meta_names
+    ):
+        tables_used = meta_names
+    else:
+        tables_used = canonical_tables_referenced_in_sql(sql, schema) or selected_tables
 
-    log.info(f"[{req.session_id}] Generated SQL: {sql}")
-
-    # 4. Validate
-    try:
-        sql = validate_sql(sql)
-    except SQLValidationError as e:
-        log.warning(f"SQL validation failed for prompt '{req.prompt}': {e} | Generated SQL: {sql}")
-        # Return a friendly message that guides the user to rephrase
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{e} — The AI generated an unsafe or unsupported query for your request.\n"
-                f"Generated SQL was: {sql[:200]}{'…' if len(sql) > 200 else ''}\n"
-                "Try rephrasing your question, e.g. 'Show me all users' or "
-                "'List users and their role names'."
-            ),
+    if not s.get("execution_enabled"):
+        return QueryResponse(
+            sql=sql,
+            explanation=explanation + " — SQL was not executed (file-only schema or no DB connection). Connect and POST /db/activate to run queries.",
+            chart_suggestion=chart_suggestion,
+            viz_config=viz_config,
+            columns=[],
+            rows=[],
+            row_count=0,
+            total_count=0,
+            has_more=False,
+            execution_ms=0,
+            tables_used=tables_used,
+            execution_skipped=True,
         )
 
-    # 5. Execute
     try:
-        exec_result = execute_sql(sql)
+        exec_result = execute_sql(sql, session_id=sid)
     except Exception as e:
-        log.error(f"SQL execution error: {e}")
-        raise HTTPException(status_code=500, detail=f"SQL execution failed: {e}")
+        log.error("SQL execution error: %s", e)
+        raise HTTPException(status_code=500, detail=f"SQL execution failed: {e}") from e
 
-    # 6. Save to session history (in-memory + persisted to disk)
-    if req.session_id:
-        if req.session_id not in sessions:
-            sessions[req.session_id] = []
-        sessions[req.session_id].append({"role": "user",      "content": req.prompt})
-        sessions[req.session_id].append({"role": "assistant", "content": sql})
-        # keep only last N turns
-        sessions[req.session_id] = sessions[req.session_id][-_SESSION_MAX_TURNS:]
-        _save_sessions(sessions)   # persist to disk for restart survival
-
-    log.info(
-        f"[{req.session_id}] Returned {exec_result['row_count']} rows "
-        f"in {exec_result['execution_ms']}ms"
-    )
+    if sid:
+        sessions.setdefault(sid, [])
+        sessions[sid].append({"role": "user", "content": req.prompt})
+        sessions[sid].append({"role": "assistant", "content": sql})
+        sessions[sid] = sessions[sid][-_SESSION_MAX_TURNS:]
+        _save_sessions(sessions)
 
     return QueryResponse(
         sql=sql,
         explanation=explanation,
         chart_suggestion=chart_suggestion,
         viz_config=viz_config,
-        tables_used=selected_tables,
+        tables_used=tables_used,
         total_count=exec_result.get("total_count", exec_result.get("row_count", 0)),
         has_more=exec_result.get("has_more", False),
+        execution_skipped=False,
         **{k: v for k, v in exec_result.items() if k not in ("total_count", "has_more")},
     )
 
@@ -859,28 +1961,19 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
 @app.post("/sql/page", response_model=PageResponse)
 @limiter.limit("20/minute")
 def paginate_sql(request: Request, req: PageRequest):
-    """
-    Run a raw SELECT with pagination.
-    Use this to fetch large result sets page by page.
-
-    Example:
-        POST /sql/page
-        { "sql": "SELECT * FROM your_table", "page": 2, "page_size": 1000 }
-    """
     try:
-        result = execute_sql_page(req.sql, page=req.page, page_size=req.page_size)
+        result = execute_sql_page(req.sql, session_id=req.session_id, page=req.page, page_size=req.page_size)
     except SQLValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        log.error(f"Pagination error: {e}")
-        raise HTTPException(status_code=500, detail=f"SQL execution failed: {e}")
+        log.error("Pagination error: %s", e)
+        raise HTTPException(status_code=500, detail=f"SQL execution failed: {e}") from e
     return PageResponse(**result)
 
 
 @app.delete("/session/{session_id}")
 @limiter.limit("10/minute")
 def clear_session(request: Request, session_id: str):
-    """Clears conversation history for a session."""
     sessions.pop(session_id, None)
     _save_sessions(sessions)
     return {"cleared": session_id}
@@ -889,140 +1982,95 @@ def clear_session(request: Request, session_id: str):
 @app.get("/cache/stats")
 @limiter.limit("30/minute")
 def get_cache_stats(request: Request):
-    """Returns SQL result cache statistics (hit count, live entries, TTL)."""
     return cache_stats()
 
 
 @app.delete("/cache/clear")
 @limiter.limit("10/minute")
-def clear_cache(request: Request):
-    """Clears all SQL result cache entries immediately."""
+def clear_cache_endpoint(request: Request):
     removed = cache_clear()
-    log.info(f"SQL cache cleared — {removed} entries removed.")
+    log.info("SQL cache cleared — %s entries.", removed)
     return {"cleared_entries": removed}
 
 
 @app.post("/reload-schema")
 @limiter.limit("5/minute")
-def reload_schema(request: Request):
-    """
-    Hot-reload: re-scan all DB tables and rebuild the FAISS index.
-    Call this after adding new tables to the database — no server restart needed.
-    """
+def reload_schema(request: Request, body: ReloadBody):
+    sid = body.session_id.strip()
+    s = _get_nl(sid)
+    if not s:
+        raise HTTPException(status_code=400, detail="Unknown session_id.")
+    if s.get("source") == "file":
+        raise HTTPException(status_code=400, detail="Cannot reload file-based schema from the database.")
+    if not has_pool(sid):
+        raise HTTPException(status_code=400, detail="No database connection for this session.")
+    pairs = s.get("selected_pairs") or []
+    if not pairs:
+        raise HTTPException(status_code=400, detail="Nothing to reload — activate tables first.")
+    sch_set = sorted({p[0] for p in pairs})
     try:
-        log.info("Schema hot-reload triggered …")
-        schema, rmeta = _extract_schema_with_reader_repair()
-        descriptions  = schema_to_text(schema)
-        table_catalog = build_table_catalog(schema)
-        retriever: SchemaRetriever = app_state["retriever"]
-        retriever.rebuild(descriptions)
-
-        app_state["schema"]        = schema
-        app_state["descriptions"]  = descriptions
-        app_state["table_catalog"] = table_catalog
-        cleared = cache_clear()   # invalidate stale SQL results after schema change
-
-        tables = list(schema["tables"].keys())
-        log.info(f"Schema reloaded — {len(tables)} table(s): {tables}")
-        payload = {
-            "status":              "reloaded",
-            "tables_found":        tables,
-            "table_count":         len(tables),
-            "sql_cache_cleared":   cleared,
-            "reader_grants_repaired": rmeta.get("reader_grants_repaired", False),
-            "admin_public_table_count": rmeta.get("admin_public_table_count"),
-        }
-        if rmeta.get("hint"):
-            payload["hint"] = rmeta["hint"]
-        if rmeta.get("repair_error"):
-            payload["repair_error"] = rmeta["repair_error"]
-        return payload
+        schema = extract_full_schema(sid, allowed_schemas=sch_set, only_tables=pairs)
     except Exception as e:
-        log.error(f"Schema reload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Reload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    _rebuild_nl_state(sid, schema)
+    cleared = cache_clear()
+    return {
+        "status": "reloaded",
+        "tables_found": list(schema.get("tables", {}).keys()),
+        "table_count": len(schema.get("tables", {})),
+        "sql_cache_cleared": cleared,
+    }
 
-
-# ── Import table from remote API ──────────────────────────────────────────────
 
 @app.post("/import-table")
 @limiter.limit("5/minute")
 def import_table_endpoint(req: ImportRequest, request: Request):
-    """
-    1. POSTs req.query to the remote SQL-passthrough API (REMOTE_API_URL).
-    2. Creates (or updates) the table req.table_name in local PostgreSQL.
-    3. Upserts all returned rows.
-    4. Hot-reloads the schema so the NL-to-SQL system sees the new table immediately.
-    """
+    sid = req.session_id.strip()
+    sess = _get_nl(sid)
+    if not sess or not sess.get("credentials"):
+        raise HTTPException(status_code=400, detail="Connect a database session first.")
+    creds = sess["credentials"]
     try:
-        log.info(
-            f"Import request: table='{req.table_name}' "
-            f"query={req.query[:80]!r} api_url={req.api_url!r}"
-        )
-
-        # Step 1 — fetch from remote API
         records = fetch_from_remote_api(req.query, req.api_url)
         if not records:
-            raise HTTPException(
-                status_code=404,
-                detail="Remote API returned 0 records. Check the query.",
-            )
-        log.info(f"Remote API returned {len(records)} records.")
-
-        # Step 2 — import into local PostgreSQL (admin connection)
-        rows_imported = import_table_to_db(req.table_name, records)
-
-        # Step 3 — hot-reload schema so the new table is queryable immediately
-        schema, rmeta = _extract_schema_with_reader_repair()
-        descriptions  = schema_to_text(schema)
-        table_catalog = build_table_catalog(schema)
-        retriever: SchemaRetriever = app_state["retriever"]
-        retriever.rebuild(descriptions)
-        app_state["schema"]        = schema
-        app_state["descriptions"]  = descriptions
-        app_state["table_catalog"] = table_catalog
-
-        tables = list(schema["tables"].keys())
-        log.info(
-            f"Import done: {rows_imported} rows into '{req.table_name}'. "
-            f"DB tables: {tables}"
+            raise HTTPException(status_code=404, detail="Remote API returned 0 records.")
+        rows_imported = import_table_to_db(
+            req.table_name,
+            records,
+            creds=creds,
+            sync_schema=req.sync_schema,
         )
-        out = {
-            "status":        "imported",
-            "table_name":    req.table_name,
+        pairs = sess.get("selected_pairs") or []
+        if (req.sync_schema, req.table_name) not in pairs:
+            pairs = list(pairs) + [(req.sync_schema, req.table_name)]
+        sess["selected_pairs"] = pairs
+        sch_set = sorted({p[0] for p in pairs})
+        schema = extract_full_schema(sid, allowed_schemas=sch_set, only_tables=pairs)
+        _rebuild_nl_state(sid, schema)
+        sess["execution_enabled"] = True
+        return {
+            "status": "imported",
+            "table_name": req.table_name,
             "rows_imported": rows_imported,
-            "tables_in_db":  tables,
-            "table_count":   len(tables),
-            "reader_grants_repaired": rmeta.get("reader_grants_repaired", False),
+            "tables_in_db": list(schema.get("tables", {}).keys()),
         }
-        if rmeta.get("hint"):
-            out["hint"] = rmeta["hint"]
-        return out
-
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Import failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        log.error("Import failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
-
-# ── Sync multiple tables from uploaded schema JSON ────────────────────────────
 
 @app.post("/sync-tables")
 @limiter.limit("30/minute")
 def sync_tables_endpoint(req: SyncRequest, request: Request):
-    """
-    For each table in req.tables:
-      1. Fetch up to req.row_limit rows from the remote API.
-      2. If the table doesn't exist locally → CREATE TABLE + INSERT all rows.
-      3. If it exists → ADD any missing columns + UPSERT all rows.
-      4. After all tables are done, hot-reload the schema.
-
-    Returns per-table status + final DB table list.
-    """
-    results   = {}
-    # row_limit=0 means fetch ALL rows (no LIMIT clause)
+    sid = req.session_id.strip()
+    sess = _get_nl(sid)
+    if not sess or not sess.get("credentials"):
+        raise HTTPException(status_code=400, detail="Connect a database session first.")
+    creds = sess["credentials"]
     row_limit = req.row_limit if req.row_limit is not None else 1000
-
+    results = {}
     for table in req.tables:
         query = (
             f'SELECT * FROM "{table}"'
@@ -1030,46 +2078,29 @@ def sync_tables_endpoint(req: SyncRequest, request: Request):
             else f'SELECT * FROM "{table}" ORDER BY id LIMIT {row_limit}'
         )
         try:
-            log.info(f"Syncing table '{table}' (limit={row_limit})…")
             records = fetch_from_remote_api(query, req.api_url)
             if not records:
                 results[table] = {"status": "skipped", "reason": "API returned 0 rows"}
                 continue
-
-            status = sync_table(table, records)
+            status = sync_table(table, records, creds=creds, sync_schema=req.sync_schema)
             results[table] = {"status": "ok", **status}
-            log.info(f"Sync '{table}' done: {status}")
-
         except Exception as e:
-            log.error(f"Sync failed for '{table}': {e}", exc_info=True)
+            log.error("Sync failed for %s: %s", table, e, exc_info=True)
             results[table] = {"status": "error", "reason": str(e)}
 
-    # Hot-reload schema so all new/updated tables are immediately queryable
-    sync_meta: dict = {}
+    pairs = sess.get("selected_pairs") or []
+    for t in req.tables:
+        if (req.sync_schema, t) not in pairs:
+            pairs.append((req.sync_schema, t))
+    sess["selected_pairs"] = pairs
+    sch_set = sorted({p[0] for p in pairs})
     try:
-        schema, sync_meta = _extract_schema_with_reader_repair()
-        descriptions  = schema_to_text(schema)
-        table_catalog = build_table_catalog(schema)
-        retriever: SchemaRetriever = app_state["retriever"]
-        retriever.rebuild(descriptions)
-        app_state["schema"]        = schema
-        app_state["descriptions"]  = descriptions
-        app_state["table_catalog"] = table_catalog
-        db_tables = list(schema["tables"].keys())
+        schema = extract_full_schema(sid, allowed_schemas=sch_set, only_tables=pairs)
+        _rebuild_nl_state(sid, schema)
+        sess["execution_enabled"] = True
+        db_tables = list(schema.get("tables", {}).keys())
     except Exception as e:
-        log.error(f"Schema reload after sync failed: {e}")
+        log.error("Schema reload after sync failed: %s", e)
         db_tables = []
 
-    out = {
-        "results":      results,
-        "tables_in_db": db_tables,
-        "table_count":  len(db_tables),
-        "reader_grants_repaired": sync_meta.get("reader_grants_repaired", False),
-    }
-    if sync_meta.get("hint"):
-        out["hint"] = sync_meta["hint"]
-    if sync_meta.get("repair_error"):
-        out["repair_error"] = sync_meta["repair_error"]
-    if sync_meta.get("admin_public_table_count") is not None:
-        out["admin_public_table_count"] = sync_meta["admin_public_table_count"]
-    return out
+    return {"results": results, "tables_in_db": db_tables, "table_count": len(db_tables)}
