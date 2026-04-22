@@ -30,7 +30,8 @@ if not st.session_state.auth_user:
 with st.sidebar:
     _auth = st.session_state.auth_user or {}
     st.caption(f"Signed in as `{_auth.get('username', 'user')}`")
-    st.page_link("streamlit_app.py", label="SQL Explorer", icon="🔍")
+    st.page_link("pages/3_Tenants.py", label="Companies (tenants)", icon="🏬")
+    st.caption("Open a project below, then use **Configuration** or **Chat** for that project.")
     if st.button("🚪 Sign Out", use_container_width=True):
         st.session_state.auth_user = None
         st.switch_page("pages/signin.py")

@@ -27,6 +27,7 @@ import bcrypt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -41,6 +42,7 @@ from utils.config import (
     session_max_age_hours,
     session_max_turns,
 )
+from embed_page import EMBED_HTML
 from utils.env import load_app_env, package_root
 
 load_app_env()
@@ -88,7 +90,7 @@ from sql_engine import (
     validate_sql,
     validate_sql_tables_against_schema,
 )
-from db import ensure_auth_tables, ensure_userdetails_database, get_app_db_cursor
+from db import get_app_db_cursor, prepare_app_auth_backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -458,19 +460,14 @@ def _extract_schema_with_reader_repair() -> tuple[dict, dict]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure app-level auth/project database exists (separate from DB_NAME / medicine).
+    # App auth DB (Userdetails + public.auth_users). Uses DB_ADMIN_* or DB_USER/DB_PASSWORD.
     try:
-        created = ensure_userdetails_database()
-        if created:
-            log.info("App-level database created successfully.")
-        else:
-            log.info("App-level database already present.")
-        ensure_auth_tables()
+        prepare_app_auth_backend()
         log.info("Auth schema is ready in app-level database.")
     except Exception as e:
         log.warning(
             "Could not ensure app-level database/auth schema: %s. "
-            "Continuing with the main NL→SQL database startup.",
+            "Sign-in will retry on first request. Continuing with NL→SQL startup.",
             e,
         )
     log.info("Extracting schema from database …")
@@ -533,6 +530,31 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
+
+
+def _embed_html_response() -> HTMLResponse:
+    # connect-src: allow other http(s) API bases in the settings field (e.g. dev vs prod)
+    csp = (
+        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' 'self'; "
+        "connect-src 'self' http: https: ws: wss:"
+    )
+    return HTMLResponse(content=EMBED_HTML, headers={"Content-Security-Policy": csp})
+
+
+@app.get("/embed", response_class=HTMLResponse, tags=["embed"])
+def embed_widget():
+    """
+    Reusable chatbot page: question → ``POST /generate-sql`` → SQL + result table.
+    Open ``/embed?session_id=<uuid>`` after **Module 1: Configuration** (schema activated).
+    Parent apps can iframe this URL (avoid ``X-Frame-Options: DENY`` on the API).
+    """
+    return _embed_html_response()
+
+
+@app.get("/embed/chat", response_class=HTMLResponse, tags=["embed"])
+def embed_chat_widget():
+    """Alias of ``GET /embed`` for integrations that name the route ``/embed/chat``."""
+    return _embed_html_response()
 
 # ── Chat session persistence (same as before) ──────────────────────────────────
 _SESSION_FILE = Path(os.getenv(
@@ -1698,6 +1720,19 @@ def signup_endpoint(request: Request, req: SignUpRequest):
         raise HTTPException(status_code=400, detail="Confirm password does not match.")
 
     try:
+        prepare_app_auth_backend()
+    except Exception as e:
+        log.error("Auth backend (signup): %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Auth database is not available. Set DB_USER and DB_PASSWORD to your "
+                "PostgreSQL superuser (e.g. postgres) or set DB_ADMIN_USER / "
+                "DB_ADMIN_PASSWORD, then restart the API."
+            ),
+        ) from e
+
+    try:
         with get_app_db_cursor(dict_cursor=True) as cur:
             cur.execute(
                 "SELECT id FROM public.auth_users WHERE LOWER(email) = LOWER(%s) LIMIT 1",
@@ -1739,6 +1774,19 @@ def signup_endpoint(request: Request, req: SignUpRequest):
 @app.post("/api/platform/auth/signin", response_model=SignInResponse)
 @limiter.limit("30/minute")
 def signin_endpoint(request: Request, req: SignInRequest):
+    try:
+        prepare_app_auth_backend()
+    except Exception as e:
+        log.error("Auth backend (signin): %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Auth database is not available. Set DB_USER and DB_PASSWORD to your "
+                "PostgreSQL superuser (e.g. postgres) or set DB_ADMIN_USER / "
+                "DB_ADMIN_PASSWORD, then restart the API."
+            ),
+        ) from e
+
     try:
         with get_app_db_cursor(dict_cursor=True) as cur:
             cur.execute(

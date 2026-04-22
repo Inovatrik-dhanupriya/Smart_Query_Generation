@@ -10,8 +10,10 @@ from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import (
     ACTIVITY_KEY,
     ensure_tenant_state,
-    projects,
+    get_tenant_by_id,
+    projects_for_tenant,
     set_selected_project,
+    tenants,
 )
 
 
@@ -27,6 +29,11 @@ def _card(title: str, value: str, help_text: str = "") -> None:
 def _render_project_row(project: dict, idx: int) -> None:
     st.markdown("<div class='sqg-card'>", unsafe_allow_html=True)
     st.markdown(f"**{project['name']}**")
+    _t = get_tenant_by_id(project.get("tenant_id") or "") or {}
+    if _t.get("name"):
+        st.caption(f"Company (tenant): **`{_t.get('name')}`** · code `{_t.get('code', '—')}`")
+    if (project.get("client_code") or "").strip():
+        st.caption(f"Label: `{project['client_code'].strip()}`")
     st.caption(project["description"])
     meta_a, meta_b = st.columns(2)
     meta_a.caption(f"Status: `{project['status']}`")
@@ -49,9 +56,29 @@ def render_tenant_dashboard() -> None:
     apply_shared_theme()
     ensure_tenant_state()
 
+    _dbe = st.session_state.pop("workspace_db_error", None)
+    if _dbe:
+        st.error(
+            f"**Could not load/save workspace in PostgreSQL:** {_dbe}  \n"
+            "Check `DB_*` / `AUTH_DB_*` in `.env`, the `Userdetails` database, and run **Streamlit** with "
+            "working directory `nl_to_sql` so `workspace_store` imports correctly."
+        )
+
     auth = st.session_state.get("auth_user") or {}
     username = auth.get("username", "user")
-    my_projects = projects()
+    tlist = [t for t in tenants() if isinstance(t, dict)]
+    _t_labels = ["All companies"] + [f"{t.get('name', '?')} ({t.get('code', '—')})" for t in tlist]
+    _t_map: dict[str, str] = {"All companies": "__all__"}
+    for t in tlist:
+        _t_map[f"{t.get('name', '?')} ({t.get('code', '—')})"] = t.get("id") or ""
+
+    selected_label = st.selectbox(
+        "Filter by company (tenant)",
+        options=_t_labels,
+        key="dashboard_tenant_filter_widget",
+    )
+    ftid = _t_map.get(selected_label, "__all__")
+    my_projects = projects_for_tenant(ftid)
     activity = st.session_state[ACTIVITY_KEY]
 
     render_page_header(
@@ -62,7 +89,7 @@ def render_tenant_dashboard() -> None:
         """
 <div class="nl-banner">
   <h3>Workspace Overview</h3>
-  <p>Use this dashboard to create, open, edit, and delete projects before entering NL-to-SQL explorer.</p>
+        <p><b>User → Company (tenant) → Project → DB connection & schema</b> (per project in Configuration). Use <b>Companies</b> in the sidebar to add tenants.</p>
 </div>
 """,
         unsafe_allow_html=True,
@@ -90,9 +117,11 @@ def render_tenant_dashboard() -> None:
         _card("Today", c3_metric, "Dashboard snapshot date.")
 
     st.markdown("### My Projects")
-    top_left, _ = st.columns([1, 4])
+    top_left, top_mid, _ = st.columns([1, 1, 3])
     if top_left.button("Create Project", use_container_width=True):
         st.switch_page("pages/project_create.py")
+    if top_mid.button("Companies (tenants)", use_container_width=True):
+        st.switch_page("pages/3_Tenants.py")
     if not my_projects:
         st.info("No projects yet. Click Create Project to get started.")
     for idx, project in enumerate(my_projects):

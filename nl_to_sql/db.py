@@ -46,22 +46,33 @@ def _app_db_name() -> str:
     return target_db
 
 
-def _admin_credentials() -> tuple[str, str]:
+def _pg_bootstrap_credentials() -> tuple[str, str]:
+    """
+    Credentials for app bootstrap (CREATE DATABASE, auth DDL, role grants).
+
+    Order:
+    1. DB_ADMIN_USER + DB_ADMIN_PASSWORD (explicit superuser/owner)
+    2. DB_USER + DB_PASSWORD (typical local dev: single ``postgres`` account)
+
+    No exception here — connect may still fail if the password is wrong.
+    """
     admin_user = os.getenv("DB_ADMIN_USER", "").strip()
     admin_password = os.getenv("DB_ADMIN_PASSWORD", "").strip()
-    if not admin_user or not admin_password:
-        raise RuntimeError("DB_ADMIN_USER and DB_ADMIN_PASSWORD must be set.")
-    return admin_user, admin_password
+    if admin_user and admin_password:
+        return admin_user, admin_password
+    u = (os.getenv("DB_USER", "") or "postgres").strip() or "postgres"
+    p = os.getenv("DB_PASSWORD", "")
+    return u, p
 
 
 def _auth_runtime_credentials() -> tuple[str, str]:
     """
     Runtime credentials for auth reads/writes on USER_DETAILS_DATABASE_NAME.
 
-    Preferred:
-      AUTH_DB_USER / AUTH_DB_PASSWORD (non-admin role with scoped grants)
-    Fallback:
-      DB_ADMIN_USER / DB_ADMIN_PASSWORD (kept for backward compatibility)
+    Order:
+    1. AUTH_DB_USER / AUTH_DB_PASSWORD (least-privilege role, preferred in production)
+    2. DB_ADMIN_USER / DB_ADMIN_PASSWORD
+    3. DB_USER / DB_PASSWORD (same as bootstrap)
     """
     global _warned_auth_runtime_fallback
     auth_user = os.getenv("AUTH_DB_USER", "").strip()
@@ -69,24 +80,35 @@ def _auth_runtime_credentials() -> tuple[str, str]:
     if auth_user and auth_password:
         return auth_user, auth_password
 
-    admin_user, admin_password = _admin_credentials()
+    admin_user = os.getenv("DB_ADMIN_USER", "").strip()
+    admin_password = os.getenv("DB_ADMIN_PASSWORD", "").strip()
+    if admin_user and admin_password:
+        if not _warned_auth_runtime_fallback:
+            log.warning(
+                "AUTH_DB_USER/AUTH_DB_PASSWORD not set. "
+                "Using DB_ADMIN_* for app auth database (set AUTH_DB_* in production)."
+            )
+            _warned_auth_runtime_fallback = True
+        return admin_user, admin_password
+
+    u, p = _pg_bootstrap_credentials()
     if not _warned_auth_runtime_fallback:
         log.warning(
             "AUTH_DB_USER/AUTH_DB_PASSWORD not set. "
-            "Falling back to admin credentials for auth runtime operations."
+            "Using DB_USER/DB_PASSWORD for app auth database (set AUTH_DB_* in production)."
         )
         _warned_auth_runtime_fallback = True
-    return admin_user, admin_password
+    return u, p
 
 
-def _connect_admin(dbname: str) -> psycopg2.extensions.connection:
-    admin_user, admin_password = _admin_credentials()
+def _connect_bootstrap(dbname: str) -> psycopg2.extensions.connection:
+    b_user, b_password = _pg_bootstrap_credentials()
     return psycopg2.connect(
         host=os.getenv("DB_HOST", "localhost"),
         port=int(os.getenv("DB_PORT", "5432")),
         dbname=dbname,
-        user=admin_user,
-        password=admin_password,
+        user=b_user,
+        password=b_password,
         connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
     )
 
@@ -185,7 +207,7 @@ def ensure_userdetails_database() -> bool:
     """
     Ensure the app-level database exists (default: USER_DETAILS_DATABASE_NAME=Userdetails).
 
-    Uses DB_ADMIN_USER / DB_ADMIN_PASSWORD and connects to the maintenance database
+    Uses :func:`_pg_bootstrap_credentials` and connects to the maintenance database
     ``postgres`` only to check/create the target database. This does not modify DB_NAME.
 
     Returns:
@@ -193,9 +215,9 @@ def ensure_userdetails_database() -> bool:
         False -> database already existed
     """
     target_db = _app_db_name()
-    admin_user, _ = _admin_credentials()
+    b_user, _ = _pg_bootstrap_credentials()
 
-    conn = _connect_admin("postgres")
+    conn = _connect_bootstrap("postgres")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -207,7 +229,7 @@ def ensure_userdetails_database() -> bool:
             cur.execute(
                 pg_sql.SQL("CREATE DATABASE {}").format(pg_sql.Identifier(target_db))
             )
-            log.info("Created app database %r using admin role %r.", target_db, admin_user)
+            log.info("Created app database %r using bootstrap role %r.", target_db, b_user)
             return True
     finally:
         conn.close()
@@ -220,7 +242,7 @@ def ensure_auth_tables() -> None:
     Current scope: fields required for Sign Up / Sign In.
     """
     target_db = _app_db_name()
-    conn = _connect_admin(target_db)
+    conn = _connect_bootstrap(target_db)
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
@@ -257,6 +279,44 @@ def ensure_auth_tables() -> None:
                 ALTER TABLE public.auth_users
                 ADD COLUMN IF NOT EXISTS company_name VARCHAR(255) NOT NULL DEFAULT ''
                 """
+            )
+            # Per-user tenant (company) and project list — Streamlit / workspace API
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.app_workspace_tenants (
+                    user_id BIGINT NOT NULL REFERENCES public.auth_users(id) ON DELETE CASCADE,
+                    id VARCHAR(64) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    code VARCHAR(64) NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, id)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.app_workspace_projects (
+                    user_id BIGINT NOT NULL REFERENCES public.auth_users(id) ON DELETE CASCADE,
+                    id VARCHAR(64) NOT NULL,
+                    tenant_id VARCHAR(64) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    status VARCHAR(32) NOT NULL DEFAULT 'Draft',
+                    client_code VARCHAR(64) NOT NULL DEFAULT '',
+                    nl_session_id VARCHAR(64) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, id),
+                    CONSTRAINT fk_app_ws_proj_tenant
+                        FOREIGN KEY (user_id, tenant_id)
+                        REFERENCES public.app_workspace_tenants (user_id, id)
+                        ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS ix_app_ws_proj_user ON public.app_workspace_projects (user_id)"
             )
             auth_user = os.getenv("AUTH_DB_USER", "").strip()
             auth_password = os.getenv("AUTH_DB_PASSWORD", "").strip()
@@ -297,6 +357,12 @@ def ensure_auth_tables() -> None:
                         pg_sql.Identifier(auth_user)
                     )
                 )
+                for _tbl in ("app_workspace_tenants", "app_workspace_projects"):
+                    cur.execute(
+                        pg_sql.SQL(
+                            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.{} TO {}"
+                        ).format(pg_sql.Identifier(_tbl), pg_sql.Identifier(auth_user))
+                    )
         conn.commit()
         log.info("Ensured auth tables in app database %r.", target_db)
     except Exception:
@@ -304,6 +370,28 @@ def ensure_auth_tables() -> None:
         raise
     finally:
         conn.close()
+
+
+_app_auth_backend_prepared: bool = False
+_app_auth_backend_lock = threading.Lock()
+
+
+def prepare_app_auth_backend() -> None:
+    """
+    Create the Userdetails (or ``USER_DETAILS_DATABASE_NAME``) database and
+    ``public.auth_users`` if they are missing. Idempotent: succeeds once per process
+    and then no-ops. Use from FastAPI startup and from auth routes so a failed
+    startup (e.g. wrong .env) can self-heal on first sign-up.
+    """
+    global _app_auth_backend_prepared
+    if _app_auth_backend_prepared:
+        return
+    with _app_auth_backend_lock:
+        if _app_auth_backend_prepared:
+            return
+        ensure_userdetails_database()
+        ensure_auth_tables()
+        _app_auth_backend_prepared = True
 
 
 @contextmanager
