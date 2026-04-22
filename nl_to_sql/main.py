@@ -579,25 +579,87 @@ def _is_schema_table_count_question(prompt: str) -> bool:
     return False
 
 
-def _live_database_table_count_sql(selected_schemas: list[str]) -> str:
-    """COUNT base tables visible in PostgreSQL (scoped to activated schemas when set)."""
+def _information_schema_base_tables_where(selected_schemas: list[str]) -> str:
+    """SQL WHERE fragment for ``information_schema.tables`` (BASE TABLE, non-system)."""
     if selected_schemas:
         parts: list[str] = []
         for raw in selected_schemas:
             sch = validate_pg_identifier(str(raw).strip())
             parts.append("'" + sch.replace("'", "''") + "'::text")
         arr = "ARRAY[" + ",".join(parts) + "]::text[]"
-        where = f"t.table_schema = ANY({arr})"
-    else:
-        where = (
-            "t.table_schema NOT IN ('pg_catalog', 'information_schema') "
-            "AND t.table_schema NOT LIKE 'pg\\_%' ESCAPE '\\'"
+        return (
+            "t.table_type = 'BASE TABLE' "
+            f"AND t.table_schema = ANY({arr})"
         )
+    return (
+        "t.table_type = 'BASE TABLE' "
+        "AND t.table_schema NOT IN ('pg_catalog', 'information_schema') "
+        "AND t.table_schema NOT LIKE 'pg\\_%' ESCAPE '\\'"
+    )
+
+
+def _is_schema_table_list_question(prompt: str) -> bool:
+    """
+    True for "list / show tables in schema" style questions. These are answered from
+    ``information_schema`` (or the in-memory schema snapshot), not the JSON SQL LLM.
+    """
+    if _is_tables_used_meta_question(prompt) or _is_schema_table_count_question(prompt):
+        return False
+    t = (prompt or "").lower()
+    if "table" not in t and "tables" not in t:
+        return False
+    if re.search(r"\b(rows|records)\b", t) and not re.search(r"\b(list|catalog|names)\b", t):
+        return False
+    phrases = (
+        "list tables",
+        "tables list",
+        "table list",
+        "list of tables",
+        "show tables",
+        "show all tables",
+        "what tables",
+        "which tables exist",
+        "which tables are in",
+        "schema tables",
+        "tables in schema",
+        "tables in this schema",
+        "tables in the schema",
+        "enumerate tables",
+        "table names",
+        "name of tables",
+        "catalog of tables",
+        "list the tables",
+    )
+    if any(p in t for p in phrases):
+        return True
+    if "list" in t and "table" in t and re.search(r"\b(schema|catalog|database|db)\b", t):
+        return True
+    if "show" in t and "table" in t and ("list" in t or "schema" in t):
+        return True
+    return False
+
+
+def _live_database_table_list_sql(selected_schemas: list[str], row_limit: int, offset: int) -> str:
+    """List BASE TABLE names from information_schema (paged)."""
+    wh = _information_schema_base_tables_where(selected_schemas)
+    lim = max(1, min(int(row_limit or 20), 5000))
+    off = max(0, int(offset or 0))
+    return (
+        "SELECT t.table_schema::text AS table_schema, t.table_name::text AS table_name "
+        "FROM information_schema.tables AS t "
+        f"WHERE {wh} "
+        "ORDER BY t.table_schema, t.table_name "
+        f"LIMIT {lim} OFFSET {off}"
+    )
+
+
+def _live_database_table_count_sql(selected_schemas: list[str]) -> str:
+    """COUNT base tables visible in PostgreSQL (scoped to activated schemas when set)."""
+    wh = _information_schema_base_tables_where(selected_schemas)
     return (
         "SELECT COUNT(*)::bigint AS number_of_tables "
         "FROM information_schema.tables AS t "
-        "WHERE t.table_type = 'BASE TABLE' "
-        f"AND {where} "
+        f"WHERE {wh} "
         "LIMIT 1 OFFSET 0"
     )
 
@@ -640,6 +702,59 @@ def _schema_table_count_meta_payload(
             "title": "Table count",
         },
         "_meta_tables_used": ["information_schema.tables"] if live else [],
+    }
+
+
+def _schema_table_list_meta_payload(
+    sess: dict[str, Any],
+    schema: dict,
+    session_id: str,
+    prompt: str,
+    row_limit: int,
+    offset: int,
+) -> dict:
+    """Paged table catalog from information_schema when live; else activated keys only."""
+    raw_keys = sorted((schema or {}).get("tables") or ())
+    n_loaded = len(raw_keys)
+    keys = raw_keys or ["(no tables in loaded schema)"]
+    live = bool(sess.get("execution_enabled")) and has_pool(session_id)
+    lim = max(1, min(int(row_limit or 20), 5000))
+    off = max(0, int(offset or 0))
+    if live:
+        sch_list = list(sess.get("selected_schemas") or [])
+        sql = _live_database_table_list_sql(sch_list, lim, off)
+        scope = (
+            f"schemas {', '.join(f'`{s}`' for s in sch_list)}"
+            if sch_list
+            else "all non-system schemas"
+        )
+        expl = (
+            f"Tables in PostgreSQL ({scope}) from information_schema — "
+            f"paged (LIMIT {lim} OFFSET {off}). NL→SQL still uses your **{n_loaded}** activated table(s) for generation."
+        )
+        meta_used = ["information_schema.tables"]
+    else:
+        lit = ",".join("'" + str(k).replace("'", "''") + "'" for k in keys[:500])
+        sql = (
+            f"SELECT u::text AS table_key FROM unnest(ARRAY[{lit}]::text[]) AS u "
+            f"ORDER BY 1 LIMIT {lim} OFFSET {off}"
+        )
+        expl = (
+            f"{n_loaded} table key(s) in this session's loaded schema (file / in-memory snapshot). "
+            "Connect and activate on PostgreSQL for a live information_schema listing."
+        )
+        meta_used = []
+    return {
+        "sql": sql,
+        "explanation": (expl + f" — «{prompt.strip()[:100]}».")[:700],
+        "chart_suggestion": "table",
+        "viz_config": {
+            "x": "table_schema" if live else "table_key",
+            "y": None,
+            "color": None,
+            "title": "Tables in schema",
+        },
+        "_meta_tables_used": meta_used,
     }
 
 
@@ -1457,6 +1572,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
     cached_used = False
 
     meta_tables_reply = _is_tables_used_meta_question(req.prompt)
+    meta_schema_list = _is_schema_table_list_question(req.prompt)
     meta_schema_count = _is_schema_table_count_question(req.prompt)
     if meta_tables_reply:
         llm_result = _tables_used_meta_payload(
@@ -1464,6 +1580,12 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
         )
         cached_used = True
         log.info("[%s] Meta reply (tables used) — skipping LLM SQL generation.", sid[:8])
+    elif meta_schema_list:
+        llm_result = _schema_table_list_meta_payload(
+            s, schema, sid, req.prompt, req.row_limit or 20, req.offset or 0,
+        )
+        cached_used = True
+        log.info("[%s] Meta reply (schema table list) — skipping LLM SQL generation.", sid[:8])
     elif meta_schema_count:
         llm_result = _schema_table_count_meta_payload(s, schema, sid, req.prompt)
         cached_used = True
@@ -1537,7 +1659,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
                 _llm_cache_set(ckey, llm_result)
             break
 
-    if meta_tables_reply or meta_schema_count:
+    if meta_tables_reply or meta_schema_count or meta_schema_list:
         sql = (llm_result.get("sql") or "").strip()
         sql = fix_postgresql_mixed_case_identifiers(sql, schema)
         try:
@@ -1552,7 +1674,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
     viz_config = llm_result.get("viz_config") or {}
     meta_names = llm_result.get("_meta_tables_used")
     if (
-        (meta_tables_reply or meta_schema_count)
+        (meta_tables_reply or meta_schema_count or meta_schema_list)
         and isinstance(meta_names, list)
         and meta_names
     ):

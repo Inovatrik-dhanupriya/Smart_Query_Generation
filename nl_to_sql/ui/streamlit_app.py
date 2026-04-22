@@ -107,6 +107,8 @@ if "top_k" not in st.session_state:
     st.session_state.top_k = 3
 if "row_limit" not in st.session_state:
     st.session_state.row_limit = 20
+if "schema_job_paused" not in st.session_state:
+    st.session_state.schema_job_paused = False
 
 
 def _nl_session_ready() -> bool:
@@ -123,6 +125,42 @@ def _nl_session_ready() -> bool:
         return bool(d.get("activated") and d.get("has_tables"))
     except Exception:
         return False
+
+
+def _sync_schema_job_paused_from_api() -> None:
+    """
+    Align ``schema_job_paused`` with the FastAPI job status. The @st.fragment poll
+    may run after the main script in a given cycle, so the main Configuration page
+    would otherwise miss Pause and keep hiding **Go to Chat**.
+    """
+    jid = st.session_state.get("schema_activation_job_id")
+    if not jid:
+        st.session_state.schema_job_paused = False
+        return
+    try:
+        r = requests.get(
+            f"{API_URL}/schema/from-file/job/{jid}",
+            params={"session_id": st.session_state.session_id},
+            timeout=15,
+        )
+        if r.ok:
+            info = r.json()
+            if isinstance(info, dict):
+                st.session_state.schema_job_paused = bool(info.get("paused"))
+    except Exception:
+        pass
+
+
+def _schema_activation_running_without_pause() -> bool:
+    """
+    True while an async schema upload/sync job is in progress and not paused.
+    In that state we hide **Go to Chat** / block switching to Chat until the job
+    completes, is cancelled, errors out, or the user pauses.
+    """
+    if not st.session_state.get("schema_activation_job_id"):
+        return False
+    _sync_schema_job_paused_from_api()
+    return not bool(st.session_state.get("schema_job_paused"))
 
 
 def _post_schema_job_control(job_id: str, session_id: str, action: str) -> bool:
@@ -142,6 +180,7 @@ def _poll_schema_upload_job_fragment() -> None:
     """Background schema activation: real table progress + Pause / Resume / Cancel."""
     jid = st.session_state.get("schema_activation_job_id")
     if not jid:
+        st.session_state.schema_job_paused = False
         return
     sid = st.session_state.session_id
     try:
@@ -156,6 +195,8 @@ def _poll_schema_upload_job_fragment() -> None:
             return
         if not isinstance(info, dict):
             return
+
+        st.session_state.schema_job_paused = bool(info.get("paused"))
 
         st.markdown("**Schema activation (running in background)**")
         ph = info.get("phase") or ""
@@ -189,11 +230,13 @@ def _poll_schema_upload_job_fragment() -> None:
         if stt == "done" and info.get("result"):
             st.session_state.nl_ready = True
             st.session_state.cfg_dialog_open = False
+            st.session_state.schema_job_paused = False
             st.session_state.schema_job_result = info["result"]
             st.session_state.schema_activation_job_id = None
             st.rerun()
         elif stt == "error":
             st.session_state.schema_job_error = info.get("error", "Activation job failed")
+            st.session_state.schema_job_paused = False
             st.session_state.schema_activation_job_id = None
             st.rerun()
     except Exception as ex:
@@ -216,8 +259,11 @@ with st.sidebar:
     with _nav_c2:
         _sty_chat = "primary" if st.session_state.ui_module == "chat" else "secondary"
         if st.button("💬 Chat", use_container_width=True, type=_sty_chat):
-            st.session_state.ui_module = "chat"
-            st.session_state.cfg_dialog_open = not _nl_session_ready()
+            if _nl_session_ready() and _schema_activation_running_without_pause():
+                st.session_state.schema_chat_nav_blocked = True
+            else:
+                st.session_state.ui_module = "chat"
+                st.session_state.cfg_dialog_open = not _nl_session_ready()
             st.rerun()
     st.divider()
 
@@ -863,11 +909,34 @@ if st.session_state.ui_module == "configuration":
 <div class="nl-banner">
   <h3>Workspace</h3>
   <p>Use the <b>Configuration</b> sidebar: connect (or upload schema), pick database → schemas → tables,
-  then <b>Activate</b>. When ready, open <b>Chat</b> to ask questions in natural language.</p>
+  then <b>Activate</b>. When ready, use <b>Chat</b> (top of the sidebar or the button below).</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
+    if st.session_state.pop("schema_chat_nav_blocked", False):
+        st.warning(
+            "**Chat** is unavailable while the background schema job is **running**. "
+            "Wait until it **finishes**, or use **Pause** or **Cancel** in the sidebar — "
+            "after **Pause**, you can open Chat with the schema loaded so far."
+        )
+    _sync_blocking_chat = _schema_activation_running_without_pause()
+    if _nl_session_ready() and not _sync_blocking_chat:
+        st.success(
+            "✅ **Schema is active.** You can open **Chat** now — use the **💬 Chat** tab "
+            "at the **top of the left sidebar** (scroll up if you only see table lists), "
+            "or click **Go to Chat** here."
+        )
+        if st.button("Go to Chat →", type="primary", key="main_go_chat_btn"):
+            st.session_state.ui_module = "chat"
+            st.session_state.cfg_dialog_open = False
+            st.rerun()
+    elif _nl_session_ready() and _sync_blocking_chat:
+        st.info(
+            "⏳ **Schema activation is still running** in the sidebar (remote sync / provisioning). "
+            "**Go to Chat** stays off until the job **completes** or you **Pause** or **Cancel** it. "
+            "If you **Pause**, Chat opens for the tables loaded up to that point."
+        )
     st.info(
         "NL→SQL is limited to the tables you activate for this session "
         "(not every table in the server unless you select them)."
