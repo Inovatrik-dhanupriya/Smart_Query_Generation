@@ -89,14 +89,16 @@ def render_sign_in_page(
         _render_alerts()
         render_nav_link(
             text="Don't have an account?",
-            button_text="Create Sign Up Account",
+            button_text="Create an account",
             on_click=go_to_sign_up,
+            button_key="auth_nav_to_signup",
         )
 
     render_auth_layout(
-        title="Sign In",
-        subtitle="Welcome back. Enter your credentials to continue.",
+        title="Welcome back",
+        subtitle="Please enter your details to sign in.",
         form_renderer=_form,
+        variant="signin",
     )
 
 
@@ -144,12 +146,14 @@ def render_sign_up_page(go_to_sign_in: Callable[[], None]) -> None:
         _render_alerts()
         render_nav_link(
             text="Already have an account?",
-            button_text="Go to Sign In",
+            button_text="Sign in",
             on_click=go_to_sign_in,
+            button_key="auth_nav_to_signin",
         )
 
     render_auth_layout(
-        title="Create Account",
-        subtitle="Sign up to start using Smart Query Generation.",
+        title="Create your account",
+        subtitle="Get started free — no credit card required.",
         form_renderer=_form,
+        variant="signup",
     )

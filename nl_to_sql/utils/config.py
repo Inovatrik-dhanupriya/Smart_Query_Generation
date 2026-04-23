@@ -99,6 +99,16 @@ def default_sync_row_limit() -> int:
     return _int("UI_DEFAULT_SYNC_ROW_LIMIT", 1000, minimum=0, maximum=100_000)
 
 
+def remote_sync_default_row_limit() -> int:
+    """Default max rows per table when loading from a remote SQL API (schema JSON flow)."""
+    return _int("REMOTE_SYNC_DEFAULT_ROW_LIMIT", 5000, minimum=1, maximum=100_000)
+
+
+def ui_schema_table_browse_limit() -> int:
+    """Max table names to render in Configuration browse / search (large catalogs)."""
+    return _int("UI_SCHEMA_TABLE_BROWSE_LIMIT", 5000, minimum=100, maximum=200_000)
+
+
 def db_sync_schema_default() -> str:
     """Legacy hook — sync target schema comes from the Streamlit UI, not from here."""
     return (os.getenv("DB_SYNC_SCHEMA") or "").strip()

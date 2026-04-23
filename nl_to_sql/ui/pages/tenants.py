@@ -7,9 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_U = Path(__file__).resolve().parent.parent
+if str(_U) not in sys.path:
+    sys.path.insert(0, str(_U))
+from ensure_path import install
+
+install()
 
 from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import (
@@ -21,7 +24,7 @@ from ui.tenant.state import (
     tenants,
 )
 
-st.set_page_config(page_title="Companies (tenants)", page_icon="🏬", layout="wide")
+st.set_page_config(page_title="Companies", page_icon="🏬", layout="wide")
 apply_shared_theme()
 ensure_tenant_state()
 
@@ -33,13 +36,12 @@ with st.sidebar:
     st.page_link("pages/dashboard.py", label="Dashboard", icon="🏠")
 
 render_page_header(
-    "Companies (tenants)",
-    "Each company is a separate tenant. Projects belong to one company; DB connection and schema are configured per project.",
+    "Companies",
+    "Add organizations you work with. Each project belongs to one company so data and access stay separate.",
 )
 
 st.info(
-    "**Structure:** User (sign-in) → **Company** (this page) → **Project** (dashboard) → **Configuration** "
-    "(database + schema) → **Chat**. Separate companies help separate client environments in the UI."
+    "On the main screen, filter projects by company. You’ll still sign in with **your** one account."
 )
 
 with st.form("new_tenant"):

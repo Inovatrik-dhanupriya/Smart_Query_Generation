@@ -7,9 +7,12 @@ import sys
 from pathlib import Path
 
 # `nl_to_sql/` must be on sys.path so `utils` and sibling imports resolve.
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_D = Path(__file__).resolve().parent
+if str(_D) not in sys.path:
+    sys.path.insert(0, str(_D))
+from ensure_path import install
+
+install()
 
 import hashlib
 import math
@@ -25,7 +28,10 @@ import streamlit as st
 
 from utils.config import (
     nl_sql_api_url,
+    remote_sync_default_row_limit,
+    sql_max_page_size,
     streamlit_row_limit_options,
+    ui_schema_table_browse_limit,
 )
 from utils.env import load_app_env
 from utils.http import safe_response_payload
@@ -39,6 +45,7 @@ _API_PORT = urlparse(API_URL).port or (443 if urlparse(API_URL).scheme == "https
 
 
 
+from ui.theme import apply_shared_theme
 from ui.tenant.project_context import apply_project_workspace, get_active_project_id
 from ui.tenant.state import (
     ensure_tenant_state,
@@ -134,14 +141,16 @@ def _poll_schema_upload_job_fragment() -> None:
         )
         info, jerr = safe_response_payload(r)
         if jerr or not r.ok:
-            st.warning(f"Job status: {jerr or r.text[:300]}")
+            st.warning("Could not read the schema job status. Check that the data service is running, then try again.")
+            with st.expander("Technical details"):
+                st.caption((jerr or (r.text[:500] if r.text else "No response") or ""))
             return
         if not isinstance(info, dict):
             return
 
         st.session_state.schema_job_paused = bool(info.get("paused"))
 
-        st.markdown("**Schema activation (running in background)**")
+        st.markdown("**Preparing your schema (background job)**")
         ph = info.get("phase") or ""
         msg = info.get("message") or ""
         cur = int(info.get("sync_current") or 0)
@@ -176,7 +185,7 @@ def _poll_schema_upload_job_fragment() -> None:
             st.session_state.schema_job_paused = False
             st.session_state.schema_job_result = info["result"]
             st.session_state.schema_activation_job_id = None
-            st.session_state.show_module2_invite = True
+            st.session_state.show_chat_invite = True
             st.rerun()
         elif stt == "error":
             st.session_state.schema_job_error = info.get("error", "Activation job failed")
@@ -195,22 +204,8 @@ def run() -> None:
     if not st.session_state.auth_user:
         st.switch_page("pages/signin.py")
         st.stop()
-    st.markdown(
-        """
-    <style>
-      .stApp { background: linear-gradient(180deg, #0b1220 0%, #0e1628 40%, #0a0f18 100%); color: #e2e8f0; }
-      [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
-      [data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] label { color: #cbd5e1 !important; }
-      [data-testid="stSidebarNav"] { display: none; }
-      .nl-banner { background: linear-gradient(90deg,#134e5e,#0f2942); padding:1rem 1.25rem; border-radius:10px;
-        border:1px solid #1e3a4a; margin-bottom:1rem; }
-      .nl-banner h3 { color:#e0f7fa; margin:0 0 0.35rem 0; font-size:1.05rem; }
-      .nl-banner p { color:#94a3b8; margin:0; font-size:0.95rem; }
-    </style>
-    """,
-        unsafe_allow_html=True,
-    )
-    
+    apply_shared_theme()
+
     # ── Session (per project / FastAPI session_id) ─────────────────────────────
     apply_project_workspace(ensure_tenant_state)
     if not get_active_project_id() or not find_project_by_id(get_active_project_id() or ""):
@@ -250,7 +245,7 @@ def run() -> None:
     st.session_state.setdefault("top_k", 3)
     st.session_state.setdefault("row_limit", 20)
     st.session_state.setdefault("schema_job_paused", False)
-    st.session_state.setdefault("show_module2_invite", False)
+    st.session_state.setdefault("show_chat_invite", False)
 
     # API calls use the per-project session id (mirrors st.session_state.session_id)
     _sid = st.session_state.session_id
@@ -264,17 +259,17 @@ def run() -> None:
                 timeout=5,
             )
         except requests.exceptions.ConnectionError:
-            st.warning(
-                f"⚠️ Cannot connect to the API at `{API_URL}`. From folder `nl_to_sql` run: "
-                f"`python -m uvicorn main:app --reload --port {_API_PORT}` "
-                "(or match your configured NL_SQL_API_URL / API_URL in .env)."
-            )
+            st.error("**Can’t connect to the data service.** It may be stopped, or the address in your environment may be wrong.")
+            with st.expander("For administrators (how to run the API locally)"):
+                st.code(
+                    f"python -m uvicorn main:app --reload --port {_API_PORT}\n# Expected URL: {API_URL}",
+                    language="bash",
+                )
             st.stop()
         if not r.ok:
-            st.warning(
-                f"⚠️ Cannot reach the API at `{API_URL}`. Start the FastAPI server "
-                f"(same host/port as NL_SQL_API_URL / API_URL in .env)."
-            )
+            st.error("**The data service did not respond.** Check that the API is running and matches your environment settings.")
+            with st.expander("Technical details"):
+                st.caption(f"URL: `{API_URL}` · HTTP {r.status_code}")
             st.stop()
         try:
             d = r.json() if r.content else {}
@@ -284,24 +279,21 @@ def run() -> None:
 
     _ensure_workbench_health(_sid)
 
-    # ── Module 2: block Chat page until Module 1 has an activated schema ─────────
+    # ── Block Chat until Configuration has an activated schema ───────────────────
     if workbench_page() == "chat" and not _nl_session_ready():
         with st.sidebar:
             st.caption("Account")
             _a0 = st.session_state.auth_user or {}
             st.caption(f"Signed in as `{_a0.get('username', 'user')}`")
-            st.page_link("pages/dashboard.py", label="Tenant Dashboard", icon="🏠")
+            st.page_link("pages/dashboard.py", label="All projects", icon="🏠")
             if st.button("🚪 Sign Out", use_container_width=True, key="signout_gated"):
                 st.session_state.auth_user = None
                 st.switch_page("pages/signin.py")
                 st.stop()
             st.divider()
-            st.info(
-                "🔒 **Module 2 (Chat)** is **locked** until you finish **Module 1** "
-                "and **Activate** at least one table."
-            )
-            if st.button("Open Module 1 — Configuration", type="primary", use_container_width=True, key="sb_gate_m1"):
-                st.switch_page("pages/1_Project_Configuration.py")
+            st.info("Open **Configuration** and activate a schema before using Chat.")
+            if st.button("Open Configuration", type="primary", use_container_width=True, key="sb_gate_m1"):
+                st.switch_page("pages/project_configuration.py")
             st.divider()
         with st.sidebar:
             st.markdown("### NL → SQL")
@@ -316,17 +308,13 @@ def run() -> None:
                 + (f"  ·  **Label:** `{_pcc0}`" if _pcc0 else "")
             )
             st.caption("Natural language to SQL")
-            st.page_link("pages/1_Project_Configuration.py", label="Module 1 — Configuration", icon="🔧")
-            st.caption("⏳ *Module 2 unlocks after Module 1*")
-        st.title("Module 2 — Chat")
-        st.caption("Locked until configuration is complete.")
-        st.error(
-            "### Chat is not available yet  \n\n"
-            "Finish **Module 1 — Configuration** first: connect to PostgreSQL (or upload a schema), "
-            "select tables, then **Activate**. After that, **Module 2 — Chat** opens here."
-        )
-        if st.button("Go to Module 1 — Configuration", type="primary", key="main_gate_m1", use_container_width=True):
-            st.switch_page("pages/1_Project_Configuration.py")
+            st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
+            st.caption("⏳ *Chat unlocks after you activate a schema*")
+        st.title("Chat")
+        st.caption("Finish your data setup first.")
+        st.error("Chat is locked: activate a schema in Configuration first.")
+        if st.button("Go to Configuration", type="primary", key="main_gate_m1", use_container_width=True):
+            st.switch_page("pages/project_configuration.py")
         st.stop()
 
     # ── Sidebar: account (Configuration page) ──────────────────────────────────
@@ -335,7 +323,7 @@ def run() -> None:
             st.caption("Account")
             _a = st.session_state.auth_user or {}
             st.caption(f"Signed in as `{_a.get('username', 'user')}`")
-            st.page_link("pages/dashboard.py", label="Tenant Dashboard", icon="🏠")
+            st.page_link("pages/dashboard.py", label="All projects", icon="🏠")
             if st.button("🚪 Sign Out", use_container_width=True, key="signout_cfg"):
                 st.session_state.auth_user = None
                 st.switch_page("pages/signin.py")
@@ -345,10 +333,10 @@ def run() -> None:
     # ── Sidebar: chat tuning (Chat page only) ─────────────────────────────────
     if workbench_page() == "chat":
         with st.sidebar:
-            st.title("⚙️ Settings")
+            st.subheader("Query options")
             _auth = st.session_state.auth_user or {}
             st.caption(f"Signed in as `{_auth.get('username', 'user')}`")
-            st.page_link("pages/dashboard.py", label="Tenant Dashboard", icon="🏠")
+            st.page_link("pages/dashboard.py", label="All projects", icon="🏠")
             if st.button("🚪 Sign Out", use_container_width=True, key="signout_chat"):
                 st.session_state.auth_user = None
                 st.switch_page("pages/signin.py")
@@ -415,14 +403,14 @@ def run() -> None:
             + (f"  ·  **Label:** `{_pcc}`" if _pcc else "")
         )
         st.caption("Natural language to SQL")
-        st.page_link("pages/1_Project_Configuration.py", label="Module 1 — Configuration", icon="🔧")
-        st.page_link("pages/2_Project_Chat.py", label="Module 2 — Chat", icon="💬")
+        st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
+        st.page_link("pages/project_chat.py", label="Chat", icon="💬")
         st.divider()
     
-    # ── Sidebar (database & schema — Module 1 only) ─────────────────
+    # ── Sidebar: database & schema (Configuration page only) ────────────────────
     if workbench_page() == "configuration":
         with st.sidebar:
-            st.header("🗄️ Module 1: DB & schema")
+            st.header("🗄️ Your database & schema")
             st.info(
                 "**Query execution** uses the **customer PostgreSQL** you connect to below "
                 "(host/user/database from **Connect** / **Activate**). It does **not** run on the app’s internal user database."
@@ -562,7 +550,8 @@ def run() -> None:
                     ),
                 )
                 _remote_url = ""
-                _remote_limit = "5000"
+                _rd = remote_sync_default_row_limit()
+                _remote_limit = str(_rd)
                 if _provision:
                     _remote_url = st.text_input(
                         "Remote SQL API URL (optional — loads row data after DDL)",
@@ -575,7 +564,7 @@ def run() -> None:
                     )
                     _remote_limit = st.text_input(
                         "Max rows per table from API",
-                        value="5000",
+                        value=str(_rd),
                         key="sf_remote_row_limit",
                         help=(
                             "Per table, per run: max rows to pull from the remote API (1–100000). "
@@ -613,7 +602,7 @@ def run() -> None:
                                 "materialize": _mat,
                                 "target_database": st.session_state.file_db_name.strip(),
                                 "remote_data_url": (_remote_url or "").strip(),
-                                "remote_row_limit": (_remote_limit or "5000").strip(),
+                                "remote_row_limit": (_remote_limit or str(_rd)).strip(),
                             }
                             _post_files = {
                                 "file": (_file_name, _file_body, "application/json"),
@@ -684,7 +673,7 @@ def run() -> None:
                                 elif r.ok and isinstance(info, dict):
                                     st.session_state.nl_ready = True
                                     st.session_state.cfg_dialog_open = False
-                                    st.session_state.show_module2_invite = True
+                                    st.session_state.show_chat_invite = True
                                     st.success(
                                         f"✅ {info.get('table_count', 0)} table(s) — "
                                         f"execution: {'on' if info.get('execution_enabled') else 'off'}"
@@ -820,7 +809,7 @@ def run() -> None:
                         "Scroll the list below to review the full catalog."
                     )
     
-                    _browse_cap = 5000
+                    _browse_cap = ui_schema_table_browse_limit()
                     with st.expander(
                         f"Browse all table names ({len(_labels):,}) — scroll to review",
                         expanded=len(_labels) <= 50,
@@ -845,11 +834,11 @@ def run() -> None:
                     )
                     _qq = (_ts or "").strip().lower()
                     _visible = [L for L in _labels if _qq in L.lower()] if _qq else []
-                    st.caption("_Live filter — results update on every keystroke._")
+                    st.caption("Results update as you type.")
     
                     if _qq:
                         if _visible:
-                            _live_cap = 5000
+                            _live_cap = ui_schema_table_browse_limit()
                             _show = _visible[:_live_cap]
                             st.markdown(f"**Matching tables ({len(_visible):,})**")
                             st.dataframe(
@@ -937,7 +926,7 @@ def run() -> None:
                                 elif act.ok and isinstance(ai, dict):
                                     st.session_state.nl_ready = True
                                     st.session_state.cfg_dialog_open = False
-                                    st.session_state.show_module2_invite = True
+                                    st.session_state.show_chat_invite = True
                                     st.success(f"✅ Active — **{ai.get('table_count', 0)}** table(s) for NL→SQL")
                                 else:
                                     st.error((ai or {}).get("detail", "Activate failed") if isinstance(ai, dict) else "Activate failed")
@@ -999,7 +988,7 @@ def run() -> None:
                 "then return here."
             )
             if st.button("← Open Configuration", use_container_width=True, key="sb_open_cfg"):
-                st.switch_page("pages/1_Project_Configuration.py")
+                st.switch_page("pages/project_configuration.py")
             _hd_c = st.session_state.get("_workbench_health") or {}
             if _schema_active(_hd_c):
                 st.success(f"📊 **{_hd_c.get('table_count', 0)}** table(s) ready")
@@ -1008,68 +997,56 @@ def run() -> None:
     
     # ── Main area ─────────────────────────────────────────────────────────────────
     if workbench_page() == "configuration":
-        st.title("Module 1 — Configuration")
-        st.caption("Database connection, schema upload, and table selection. Then use **Module 2 — Chat**.")
-        if st.session_state.get("show_module2_invite"):
+        st.title("Configuration")
+        st.caption("Connect your database (or upload a schema), choose tables, then activate. After that, use **Chat**.")
+        if st.session_state.get("show_chat_invite"):
 
-            @st.dialog("Schema is ready — open Chat?")
-            def _invite_module2_dialog():
-                st.success("**Module 1** is complete: your schema is **active**.")
+            @st.dialog("Your schema is ready")
+            def _invite_chat_dialog():
+                st.success("**Configuration** is complete — your schema is **active**.")
                 st.markdown(
-                    "Open **Module 2 — Chat** to ask questions in natural language, or stay here to adjust configuration."
+                    "Open **Chat** to ask questions in plain language, or stay here to change connection or tables."
                 )
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("Open Module 2 — Chat", type="primary", use_container_width=True, key="dlg_invite_m2"):
-                        st.session_state.show_module2_invite = False
-                        st.switch_page("pages/2_Project_Chat.py")
+                    if st.button("Open Chat", type="primary", use_container_width=True, key="dlg_invite_m2"):
+                        st.session_state.show_chat_invite = False
+                        st.switch_page("pages/project_chat.py")
                 with c2:
-                    if st.button("Stay in Module 1", use_container_width=True, key="dlg_invite_stay"):
-                        st.session_state.show_module2_invite = False
+                    if st.button("Stay on this page", use_container_width=True, key="dlg_invite_stay"):
+                        st.session_state.show_chat_invite = False
                         st.rerun()
 
-            _invite_module2_dialog()
-        st.subheader("What to do in Module 1")
+            _invite_chat_dialog()
+        st.subheader("Steps")
         st.markdown(
             """
     <div class="nl-banner">
-      <h3>Workspace</h3>
-      <p>In the <b>Module 1</b> sidebar: connect to PostgreSQL (or upload schema JSON), pick database → schemas → tables,
-      then <b>Activate</b>. When ready, open <b>Module 2 — Chat</b> (sidebar or button below).</p>
+      <h3>What to do</h3>
+      <p>Use the <b>sidebar</b>: connect to PostgreSQL (or upload a schema file), pick a database → schemas → tables,
+      then <b>Activate</b>. When you are ready, open <b>Chat</b> from the sidebar or the button below.</p>
     </div>
     """,
             unsafe_allow_html=True,
         )
         if st.session_state.pop("schema_chat_nav_blocked", False):
-            st.warning(
-                "**Chat** is unavailable while the background schema job is **running**. "
-                "Wait until it **finishes**, or use **Pause** or **Cancel** in the sidebar — "
-                "after **Pause**, you can open Chat with the schema loaded so far."
-            )
+            st.warning("Chat is unavailable while the schema job is still running.")
         _sync_blocking_chat = _schema_activation_running_without_pause()
         if _nl_session_ready() and not _sync_blocking_chat:
             st.success(
                 "✅ **Schema is active.** Open the **Chat** page from the **sidebar** (or below)."
             )
             if st.button("Go to Chat →", type="primary", key="main_go_chat_btn"):
-                st.switch_page("pages/2_Project_Chat.py")
+                st.switch_page("pages/project_chat.py")
         elif _nl_session_ready() and _sync_blocking_chat:
-            st.info(
-                "⏳ **Schema activation is still running** in the sidebar (remote sync / provisioning). "
-                "**Go to Chat** stays off until the job **completes** or you **Pause** or **Cancel** it. "
-                "If you **Pause**, Chat opens for the tables loaded up to that point."
-            )
-        st.info(
-            "NL→SQL is limited to the tables you activate for this session "
-            "(not every table in the server unless you select them)."
-        )
+            st.info("Schema activation is still running (use Pause to open Chat on partial data).")
+        st.info("Only the tables you activate are used for this session.")
         st.stop()
     else:
-        st.title("Module 2 — Chat")
-        st.caption("Ask a question, generate SQL, run the query, and view results (same flow as a reusable API / iframe).")
+        st.title("Chat")
+        st.caption("Ask in plain language. You’ll get an explanation, SQL, and your data.")
 
-    # ── Module 2: Chat (main) — only reached when schema is active (gated above) ───
-    st.subheader("Module 2 — Chat")
+    # ── Chat main (only when schema is active; gated above) ───────────────────────
     if not _nl_session_ready():
         st.error("Unexpected state: Chat should be locked until the schema is active.")
         st.stop()
@@ -1170,7 +1147,7 @@ def run() -> None:
                     # Chart always shows the complete result — not just the current page.
                     if chart_key not in st.session_state:
                         initial_rows = data.get("rows", [])
-                        if total_count > len(initial_rows) and total_count <= 5_000 and sql:
+                        if total_count > len(initial_rows) and total_count <= sql_max_page_size() and sql:
                             # Fetch all rows in one shot for the chart
                             try:
                                 _cr = requests.post(
@@ -1213,9 +1190,7 @@ def run() -> None:
                     # ── Large-dataset banner ──────────────────────────────────
                     if total_count > ps:
                         st.info(
-                            f"Showing **{len(cur_rows):,}** of **{total_count:,}** rows "
-                            f"(page {cur_page}/{total_pages}). "
-                            f"Use **◀ Prev / Next ▶** to browse all pages."
+                            f"Rows {len(cur_rows):,} of {total_count:,} (page {cur_page}/{total_pages})."
                         )
     
                     # ── Dataframe (current page only) ─────────────────────────
@@ -1237,12 +1212,7 @@ def run() -> None:
     
                         if null_cols:
                             st.warning(
-                                f"⚠️ **{len(null_cols)} column(s) returned no data:** "
-                                f"{', '.join(f'`{c}`' for c in null_cols)}  \n"
-                                "The JOIN found no matching rows for these fields.  \n"
-                                "**Fix:** Rephrase to use a stronger filter, e.g.  \n"
-                                "*'List orders with non-null ship dates'* → "
-                                "the system can use INNER JOIN + IS NOT NULL automatically."
+                                f"No data in {len(null_cols)} column(s): {', '.join(f'`{c}`' for c in null_cols[:20])}."
                             )
     
                     # ── Charts (always use full dataset, not current page) ─────
