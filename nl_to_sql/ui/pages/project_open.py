@@ -46,7 +46,7 @@ st.markdown("<div class='sqg-card'>", unsafe_allow_html=True)
 st.write(f"**Description:** {project['description']}")
 _ct = get_tenant_by_id(project.get("tenant_id") or "")
 if _ct and _ct.get("name"):
-    st.write(f"**Company (tenant):** {_ct.get('name')} (`{_ct.get('code', '—')}`)")
+    st.write(f"**Company (tenant):** {_ct.get('name')}")
 if (project.get("client_code") or "").strip():
     st.write(f"**Label:** {project.get('client_code', '').strip()}")
 st.write(f"**Status:** {project['status']}")

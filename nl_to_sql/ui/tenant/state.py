@@ -97,12 +97,11 @@ def get_tenant_by_id(tenant_id: str) -> dict | None:
     return None
 
 
-def create_tenant(name: str, code: str) -> dict:
+def create_tenant(name: str) -> dict:
     ensure_tenant_state()
     t: dict = {
         "id": f"ten-{uuid.uuid4().hex[:6]}",
         "name": (name or "").strip() or "Unnamed company",
-        "code": (code or "").strip() or "—",
         "updated_at": "just now",
     }
     uid = _auth_uid()
