@@ -7,9 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_U = Path(__file__).resolve().parent.parent
+if str(_U) not in sys.path:
+    sys.path.insert(0, str(_U))
+from ensure_path import install
+
+install()
 
 from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import (

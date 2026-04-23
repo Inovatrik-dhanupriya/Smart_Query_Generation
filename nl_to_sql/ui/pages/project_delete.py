@@ -7,9 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_U = Path(__file__).resolve().parent.parent
+if str(_U) not in sys.path:
+    sys.path.insert(0, str(_U))
+from ensure_path import install
+
+install()
 
 from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import delete_project, ensure_tenant_state, selected_project
@@ -33,9 +36,9 @@ if not project:
         st.switch_page("pages/dashboard.py")
     st.stop()
 
-render_page_header("Delete Project", f"Remove `{project['name']}` from your projects.")
-st.error("This is a frontend-only delete placeholder. Backend soft-delete can be added later.")
-confirm = st.checkbox("Yes, I want to delete this project.")
+render_page_header("Delete project", f"Remove **{project['name']}** from your list?")
+st.warning("This cannot be undone. The project is removed for your account.")
+confirm = st.checkbox("Yes, remove this project.")
 
 left, right = st.columns(2)
 if left.button("Delete Project", use_container_width=True, disabled=not confirm):

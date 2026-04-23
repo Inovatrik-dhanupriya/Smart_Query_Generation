@@ -1,9 +1,16 @@
 # Reusable chatbot UI — served at GET /embed and GET /embed/chat (same origin as the API).
-# Load ?session_id=<uuid> after schema activation in the main app (Module 1).
+# Load ?session_id=<uuid> after schema activation in the main app.
+#
+# Default API base for the embed form comes from the same env as the Streamlit app
+# (``NL_SQL_API_URL`` / ``API_URL``); use :func:`get_embed_html` so it is not hardcoded.
+
+from __future__ import annotations
+
+import json
 
 EMBED_PAGE_TITLE = "NL → SQL — embed"
 
-EMBED_HTML = """<!DOCTYPE html>
+EMBED_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -100,11 +107,15 @@ EMBED_HTML = """<!DOCTYPE html>
     var err = document.getElementById("err");
     var send = document.getElementById("send");
     var clear = document.getElementById("clear");
-    if (!window.location.port || window.location.port === "8000") {
-      api.value = window.location.origin;
-    } else {
-      api.value = "http://127.0.0.1:8000";
-    }
+    // Same protocol + host as this page when served over http(s); else use server-provided default (matches .env)
+    (function setDefaultApi() {
+      var p = (window.location && window.location.protocol) || "";
+      if (p === "http:" || p === "https:") {
+        api.value = window.location.origin;
+      } else {
+        api.value = __NL_SQL_DEFAULT_API_INJECT__;
+      }
+    })();
     var usp = new URLSearchParams(window.location.search);
     if (usp.get("session_id")) sid.value = usp.get("session_id");
     clear.onclick = function () {
@@ -188,3 +199,11 @@ EMBED_HTML = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def get_embed_html() -> str:
+    """Return the embed page HTML with a non-hardcoded default API (from env via ``utils.config``)."""
+    from utils.config import nl_sql_api_url
+
+    injected = json.dumps(nl_sql_api_url())
+    return EMBED_HTML_TEMPLATE.replace("__NL_SQL_DEFAULT_API_INJECT__", injected)

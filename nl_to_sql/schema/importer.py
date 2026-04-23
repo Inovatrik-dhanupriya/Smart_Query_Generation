@@ -231,8 +231,7 @@ def sync_table(
                     )
                 except Exception as ex:
                     log.warning(
-                        "Cannot ADD PRIMARY KEY (id) on %s.%s (%s); "
-                        "using delete+insert per row",
+                        "Cannot ADD PRIMARY KEY (id) on %s.%s: %s (delete+insert per row).",
                         sync_ns,
                         table_name,
                         ex,
