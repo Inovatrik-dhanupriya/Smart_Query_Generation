@@ -1,0 +1,9 @@
+# Run Streamlit from the `nl_to_sql` directory, e.g. `streamlit run ui/streamlit_app.py`
+# so this file is loaded and the default multipage list is hidden (custom nav uses st.page_link).
+
+[client]
+showSidebarNavigation = false
+
+[theme]
+# Align with `apply_dashboard_theme()` (QueryBase-style purple)
+primaryColor = "#5b21b6"

@@ -7,9 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_U = Path(__file__).resolve().parent.parent
+if str(_U) not in sys.path:
+    sys.path.insert(0, str(_U))
+from ensure_path import install
+
+install()
 
 from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import (
@@ -42,13 +45,13 @@ if not project:
 render_page_header("Edit Project", f"Update project `{project['name']}`.")
 
 _tn_list = [t for t in tenants() if isinstance(t, dict)]
-_tn_labels = [f"{t.get('name', '?')} ({t.get('code', '—')})" for t in _tn_list]
-_tn_by_label = {f"{t.get('name', '?')} ({t.get('code', '—')})": t.get("id") for t in _tn_list}
+_tn_labels = [str(t.get("name", "?")) for t in _tn_list]
+_tn_by_label = {str(t.get("name", "?")): t.get("id") for t in _tn_list}
 _cur_tid = project.get("tenant_id") or "ten-default"
 _def_label = None
 for _t in _tn_list:
     if _t.get("id") == _cur_tid:
-        _def_label = f"{_t.get('name', '?')} ({_t.get('code', '—')})"
+        _def_label = str(_t.get("name", "?"))
         break
 if not _def_label and _tn_labels:
     _def_label = _tn_labels[0]

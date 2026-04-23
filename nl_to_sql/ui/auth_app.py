@@ -13,13 +13,30 @@ from pathlib import Path
 import streamlit as st
 
 # `nl_to_sql/` must be on sys.path so sibling imports resolve.
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_D = Path(__file__).resolve().parent
+if str(_D) not in sys.path:
+    sys.path.insert(0, str(_D))
+from ensure_path import install
+
+install()
 
 from ui.auth.pages import render_sign_in_page, render_sign_up_page
 
-st.set_page_config(page_title="Smart Query Auth", page_icon="🔐", layout="wide")
+st.set_page_config(
+    page_title="Smart Query",
+    page_icon="🔐",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+st.markdown(
+    """
+    <style>
+      section[data-testid="stSidebar"] { display: none !important; }
+      [data-testid="collapsedControl"] { display: none !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 _SIGN_IN = "signin"
 _SIGN_UP = "signup"
@@ -51,7 +68,6 @@ def _go_main() -> None:
     st.switch_page("pages/dashboard.py")
 
 
-st.title("Smart Query Generation")
 route = _get_route()
 
 if route == _SIGN_UP:

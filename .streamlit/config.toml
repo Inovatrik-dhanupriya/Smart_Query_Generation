@@ -1,0 +1,7 @@
+# If you start Streamlit from the repo root (e.g. `streamlit run nl_to_sql/ui/streamlit_app.py`).
+
+[client]
+showSidebarNavigation = false
+
+[theme]
+primaryColor = "#5b21b6"

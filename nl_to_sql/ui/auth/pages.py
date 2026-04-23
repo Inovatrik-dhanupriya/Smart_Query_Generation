@@ -14,6 +14,7 @@ from ui.auth.validators import validate_sign_in, validate_sign_up
 
 _AUTH_ALERTS_KEY = "auth_alerts"
 _AUTH_USER_KEY = "auth_user"
+_AUTH_VIEW_KEY = "_auth_view"
 
 
 def _set_alerts(kind: str, messages: list[str]) -> None:
@@ -55,6 +56,10 @@ def render_sign_in_page(
     go_to_sign_up: Callable[[], None],
     go_to_main: Callable[[], None] | None = None,
 ) -> None:
+    if st.session_state.get(_AUTH_VIEW_KEY) != "signin":
+        st.session_state[_AUTH_VIEW_KEY] = "signin"
+        st.session_state[_AUTH_ALERTS_KEY] = []
+
     def _form() -> None:
         with st.form("sign_in_form", clear_on_submit=False):
             username = st.text_input("Username", placeholder="Enter your username")
@@ -89,18 +94,24 @@ def render_sign_in_page(
         _render_alerts()
         render_nav_link(
             text="Don't have an account?",
-            button_text="Create Sign Up Account",
+            button_text="Create an account",
             on_click=go_to_sign_up,
+            button_key="auth_nav_to_signup",
         )
 
     render_auth_layout(
-        title="Sign In",
-        subtitle="Welcome back. Enter your credentials to continue.",
+        title="Welcome back",
+        subtitle="Please enter your details to sign in.",
         form_renderer=_form,
+        variant="signin",
     )
 
 
 def render_sign_up_page(go_to_sign_in: Callable[[], None]) -> None:
+    if st.session_state.get(_AUTH_VIEW_KEY) != "signup":
+        st.session_state[_AUTH_VIEW_KEY] = "signup"
+        st.session_state[_AUTH_ALERTS_KEY] = []
+
     def _form() -> None:
         with st.form("sign_up_form", clear_on_submit=False):
             email = st.text_input("Email", placeholder="Enter your email")
@@ -119,6 +130,11 @@ def render_sign_up_page(go_to_sign_in: Callable[[], None]) -> None:
             submitted = st.form_submit_button("Sign Up", use_container_width=True)
 
         if submitted:
+            email = (email or "").strip()
+            company_name = (company_name or "").strip()
+            username = (username or "").strip()
+            password = password or ""
+            confirm_password = confirm_password or ""
             errors = validate_sign_up(email, company_name, username, password, confirm_password)
             if errors:
                 _set_alerts("error", errors)
@@ -128,6 +144,7 @@ def render_sign_up_page(go_to_sign_in: Callable[[], None]) -> None:
                     company_name=company_name,
                     username=username,
                     password=password,
+                    confirm_password=confirm_password,
                 )
                 if result.get("ok"):
                     st.session_state[_AUTH_ALERTS_KEY] = []
@@ -144,12 +161,14 @@ def render_sign_up_page(go_to_sign_in: Callable[[], None]) -> None:
         _render_alerts()
         render_nav_link(
             text="Already have an account?",
-            button_text="Go to Sign In",
+            button_text="Sign in",
             on_click=go_to_sign_in,
+            button_key="auth_nav_to_signin",
         )
 
     render_auth_layout(
-        title="Create Account",
-        subtitle="Sign up to start using Smart Query Generation.",
+        title="Create your account",
+        subtitle="Get started free — no credit card required.",
         form_renderer=_form,
+        variant="signup",
     )

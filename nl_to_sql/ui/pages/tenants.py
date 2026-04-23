@@ -7,9 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_U = Path(__file__).resolve().parent.parent
+if str(_U) not in sys.path:
+    sys.path.insert(0, str(_U))
+from ensure_path import install
+
+install()
 
 from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import (
@@ -21,7 +24,7 @@ from ui.tenant.state import (
     tenants,
 )
 
-st.set_page_config(page_title="Companies (tenants)", page_icon="🏬", layout="wide")
+st.set_page_config(page_title="Companies", page_icon="🏬", layout="wide")
 apply_shared_theme()
 ensure_tenant_state()
 
@@ -33,28 +36,23 @@ with st.sidebar:
     st.page_link("pages/dashboard.py", label="Dashboard", icon="🏠")
 
 render_page_header(
-    "Companies (tenants)",
-    "Each company is a separate tenant. Projects belong to one company; DB connection and schema are configured per project.",
+    "Companies",
+    "Add organizations you work with. Each project belongs to one company so data and access stay separate.",
 )
 
 st.info(
-    "**Structure:** User (sign-in) → **Company** (this page) → **Project** (dashboard) → **Configuration** "
-    "(database + schema) → **Chat**. Separate companies help separate client environments in the UI."
+    "On the main screen, filter projects by company. You’ll still sign in with **your** one account."
 )
 
 with st.form("new_tenant"):
-    c1, c2 = st.columns(2)
-    with c1:
-        t_name = st.text_input("Company name", placeholder="e.g. Acme Corp")
-    with c2:
-        t_code = st.text_input("Short code", placeholder="e.g. ACME")
+    t_name = st.text_input("Company name", placeholder="e.g. Acme Corp")
     add = st.form_submit_button("Add company", use_container_width=True)
 
 if add:
     if not (t_name or "").strip():
         st.error("Company name is required.")
     else:
-        t = create_tenant(name=t_name, code=t_code)
+        t = create_tenant(name=t_name)
         if t is None:
             st.error(st.session_state.get("workspace_db_error") or "Could not save to the database.")
         else:
@@ -68,7 +66,7 @@ for t in tenants():
     if not isinstance(t, dict):
         continue
     with st.container():
-        st.markdown(f"**{t.get('name', '—')}** · code `{t.get('code', '—')}` · `{t.get('id', '')}`")
+        st.markdown(f"**{t.get('name', '—')}** · `{t.get('id', '')}`")
         if t.get("id") != DEFAULT_TENANT_ID:
             if st.button("Delete", key=f"del_{t.get('id')}", type="secondary"):
                 if delete_tenant(t.get("id") or ""):

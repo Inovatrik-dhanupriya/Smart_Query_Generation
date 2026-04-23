@@ -42,7 +42,7 @@ from utils.config import (
     session_max_age_hours,
     session_max_turns,
 )
-from embed_page import EMBED_HTML
+from embed_page import get_embed_html
 from utils.env import load_app_env, package_root
 
 load_app_env()
@@ -176,11 +176,7 @@ def _schema_upload_core(
         if not _kc:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Provisioning requires an active PostgreSQL session. Connect first "
-                    "(Live PostgreSQL or “New connection” under Upload), then upload with "
-                    "keep connection enabled, and check “Create database & tables on server”."
-                ),
+                detail="PostgreSQL session must be connected before provisioning.",
             )
         sess_pre = _get_nl(sid)
         creds = sess_pre.get("credentials") if sess_pre else None
@@ -389,10 +385,7 @@ def _gemini_embed_error_to_http(e: genai_errors.ClientError) -> HTTPException:
     if sc == 429 or "resource_exhausted" in text:
         return HTTPException(
             status_code=503,
-            detail=(
-                "Google Gemini rate limit while building table embeddings. "
-                f"Wait and retry, or try again later. ({e})"
-            ),
+            detail=f"Gemini rate limit (429) during embeddings: {e}",
         )
     if sc in (400, 401, 403) and (
         "api key" in text
@@ -402,13 +395,7 @@ def _gemini_embed_error_to_http(e: genai_errors.ClientError) -> HTTPException:
     ):
         return HTTPException(
             status_code=502,
-            detail=(
-                "Google Gemini rejected the request while embedding table descriptions (needed for table search). "
-                "Fix: set GEMINI_API_KEY in your project root `.env` to a valid key from "
-                "https://aistudio.google.com/apikey , ensure the Generative Language API is enabled for that key, "
-                "then restart `uvicorn`. "
-                f"Upstream message: {e}"
-            ),
+            detail=f"Gemini request rejected (check GEMINI_API_KEY and API access): {e}",
         )
     return HTTPException(
         status_code=502,
@@ -463,10 +450,7 @@ def _extract_schema_with_reader_repair() -> tuple[dict, dict]:
 
     if not schema.get("tables"):
         sync_s = get_sync_target_schema()
-        meta["hint"] = (
-            f"No tables visible to the API at startup (sync schema: {sync_s!r}). "
-            "Connect/activate a session from the UI, then reload schema."
-        )
+        meta["hint"] = f"No tables found at startup (sync schema: {sync_s!r})."
     return schema, meta
 
 
@@ -488,11 +472,7 @@ async def lifespan(app: FastAPI):
 >>>>>>> c421207 (WIP: project DB setup)
         log.info("Auth schema is ready in app-level database.")
     except Exception as e:
-        log.warning(
-            "Could not ensure app-level database/auth schema: %s. "
-            "Sign-in will retry on first request. Continuing with NL→SQL startup.",
-            e,
-        )
+        log.warning("App database/auth setup failed: %s. Continuing.", e)
     log.info("Extracting schema from database …")
     schema, _repair = _extract_schema_with_reader_repair()
     descriptions  = schema_to_text(schema)
@@ -506,28 +486,7 @@ async def lifespan(app: FastAPI):
 
     tables = list(schema["tables"].keys())
     if not tables:
-        _ss = get_sync_target_schema()
-        _du = os.getenv("DB_USER", "")
-        _dn = os.getenv("DB_NAME", "")
-        log.warning(
-            "⚠️  No tables visible to the API (information_schema empty for DB_USER). "
-            "Possible causes:\n"
-            "  1. Tables were created under DB_ADMIN_USER in schema %r but DB_USER %r "
-            "has no USAGE/SELECT — grant on that schema (sync target is DB_SYNC_SCHEMA).\n"
-            "     Example fix: GRANT USAGE ON SCHEMA %s TO %s; "
-            "GRANT SELECT ON ALL TABLES IN SCHEMA %s TO %s;\n"
-            "  2. Database %r is empty or DB_SCHEMAS excludes every schema that has tables.\n"
-            "  3. Wrong DB_HOST / DB_NAME / DB_USER in .env vs pgAdmin.\n"
-            "Server will start but NL→SQL will fail until you fix permissions or sync data, "
-            "then POST /reload-schema.",
-            _ss,
-            _du,
-            _ss,
-            _du,
-            _ss,
-            _du,
-            _dn,
-        )
+        log.warning("No tables visible in information_schema for the configured user at API startup.")
     else:
         log.info(f"Schema loaded — {len(tables)} table(s): {tables}")
     log.info("NL→SQL API ready — connect and activate a session from the UI.")
@@ -561,7 +520,7 @@ def _embed_html_response() -> HTMLResponse:
         "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' 'self'; "
         "connect-src 'self' http: https: ws: wss:"
     )
-    return HTMLResponse(content=EMBED_HTML, headers={"Content-Security-Policy": csp})
+    return HTMLResponse(content=get_embed_html(), headers={"Content-Security-Policy": csp})
 
 
 @app.get("/embed", response_class=HTMLResponse, tags=["embed"])
@@ -823,16 +782,10 @@ def _schema_table_count_meta_payload(
             if sch_list
             else "all non-system schemas"
         )
-        expl = (
-            f"Live count of BASE TABLE rows in information_schema for {scope} "
-            f"(not only the {n_loaded} table(s) currently loaded for NL→SQL retrieval)."
-        )
+        expl = f"Live information_schema count for {scope}."
     else:
         sql = f"SELECT {int(n_loaded)}::bigint AS number_of_tables LIMIT 1 OFFSET 0"
-        expl = (
-            f"{n_loaded} table(s) are loaded in this session's schema snapshot (file or "
-            "in-memory). Connect and POST /db/activate to count tables directly in PostgreSQL."
-        )
+        expl = f"Snapshot: {n_loaded} table(s) loaded. Connect the database to get a live count."
     return {
         "sql": sql,
         "explanation": (expl + f" — «{prompt.strip()[:100]}».")[:650],
@@ -1276,7 +1229,7 @@ def db_connect(request: Request, body: DbConnectBody):
     if not initial_db:
         raise HTTPException(
             status_code=400,
-            detail="Provide catalog_database or a non-empty username to derive the initial database name.",
+            detail="Missing catalog database or username.",
         )
     creds = PgCredentials(
         host=body.host,
@@ -1374,7 +1327,7 @@ def db_activate(request: Request, body: DbActivateBody):
     if not creds or creds.database.strip() != body.database.strip():
         raise HTTPException(
             status_code=400,
-            detail="database does not match the active connection. Call /db/use-database first.",
+            detail="Database does not match the active connection. Use /db/use-database first.",
         )
     pairs = [(t.schema_name, t.name) for t in body.tables]
     sch_set = sorted({p[0] for p in pairs})
@@ -1748,11 +1701,7 @@ def signup_endpoint(request: Request, req: SignUpRequest):
         log.error("Auth backend (signup): %s", e, exc_info=True)
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Auth database is not available. Set DB_USER and DB_PASSWORD to your "
-                "PostgreSQL superuser (e.g. postgres) or set DB_ADMIN_USER / "
-                "DB_ADMIN_PASSWORD, then restart the API."
-            ),
+            detail="Auth database unavailable. Check DB_* credentials in .env and restart the API.",
         ) from e
 
     try:
@@ -1785,6 +1734,17 @@ def signup_endpoint(request: Request, req: SignUpRequest):
             )
             row = cur.fetchone()
             user_id = int(row["id"]) if row else None
+            if user_id is not None:
+                tenant_name = (req.company_name or "").strip()
+                cur.execute(
+                    """
+                    INSERT INTO public.app_workspace_tenants (user_id, id, name, created_at, updated_at)
+                    VALUES (%s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (user_id, id) DO UPDATE
+                    SET name = EXCLUDED.name, updated_at = NOW()
+                    """,
+                    (user_id, "ten-default", tenant_name),
+                )
 
         return SignUpResponse(ok=True, message="Account created successfully.", user_id=user_id)
     except HTTPException:
@@ -1803,11 +1763,7 @@ def signin_endpoint(request: Request, req: SignInRequest):
         log.error("Auth backend (signin): %s", e, exc_info=True)
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Auth database is not available. Set DB_USER and DB_PASSWORD to your "
-                "PostgreSQL superuser (e.g. postgres) or set DB_ADMIN_USER / "
-                "DB_ADMIN_PASSWORD, then restart the API."
-            ),
+            detail="Auth database unavailable. Check DB_* credentials in .env and restart the API.",
         ) from e
 
     try:
@@ -1863,7 +1819,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
     if not s or not s.get("retriever"):
         raise HTTPException(
             status_code=400,
-            detail="No activated schema for this session. Use POST /db/activate or /schema/from-file first.",
+            detail="No activated schema for this session.",
         )
 
     schema = s["schema"]
@@ -1961,10 +1917,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
                     if code == 429 or "RESOURCE_EXHAUSTED" in str(e).upper():
                         raise HTTPException(
                             status_code=503,
-                            detail=(
-                                "Google Gemini rate limit (429). Wait and retry. "
-                                f"Technical: {e}"
-                            ),
+                            detail=f"Gemini rate limit (429): {e}",
                         ) from e
                     raise
                 except ValueError as e:
@@ -1994,12 +1947,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
                 allow = ", ".join(f"`{t}`" for t in sorted(all_tables)[:72])
                 if len(all_tables) > 72:
                     allow += ", …"
-                repair_hint = (
-                    f"{e} Regenerate correct SQL for the same user question. "
-                    f"These table names are NOT in the database and must NOT appear: "
-                    f"{', '.join(f'`{b}`' for b in bad)}. "
-                    f"Use ONLY these relations in FROM/JOIN: {allow}"
-                )
+                repair_hint = f"{e} Remove invalid names {bad!s}; use only: {allow}"
                 continue
 
             if not cached_used:
@@ -2032,7 +1980,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
     if not s.get("execution_enabled"):
         return QueryResponse(
             sql=sql,
-            explanation=explanation + " — SQL was not executed (file-only schema or no DB connection). Connect and POST /db/activate to run queries.",
+            explanation=explanation + " (SQL not executed: no active database for this session.)",
             chart_suggestion=chart_suggestion,
             viz_config=viz_config,
             columns=[],

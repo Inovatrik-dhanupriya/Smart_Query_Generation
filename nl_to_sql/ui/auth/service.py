@@ -38,7 +38,13 @@ def sign_in(username: str, password: str) -> dict[str, Any]:
         return {"ok": False, "message": f"Could not reach API: {ex}"}
 
 
-def sign_up(email: str, company_name: str, username: str, password: str) -> dict[str, Any]:
+def sign_up(
+    email: str,
+    company_name: str,
+    username: str,
+    password: str,
+    confirm_password: str,
+) -> dict[str, Any]:
     try:
         resp = requests.post(
             f"{API_URL}/api/platform/auth/signup",
@@ -47,7 +53,7 @@ def sign_up(email: str, company_name: str, username: str, password: str) -> dict
                 "company_name": company_name,
                 "username": username,
                 "password": password,
-                "confirm_password": password,
+                "confirm_password": confirm_password,
             },
             timeout=15,
         )

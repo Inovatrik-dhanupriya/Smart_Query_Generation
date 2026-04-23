@@ -13,6 +13,15 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def ensure_package_on_sys_path() -> None:
+    """Idempotent: add ``nl_to_sql/`` to ``sys.path`` (for imports when cwd differs)."""
+    import sys
+
+    s = str(package_root())
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
+
 def project_root() -> Path:
     """Repository root (`Table_automation/`) — parent of `nl_to_sql/`."""
     return package_root().parent

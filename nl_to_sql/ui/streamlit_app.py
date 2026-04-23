@@ -12,9 +12,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_D = Path(__file__).resolve().parent
+if str(_D) not in sys.path:
+    sys.path.insert(0, str(_D))
+from ensure_path import install
+
+install()
 
 import streamlit as st
 

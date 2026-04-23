@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import html
 from datetime import datetime
 
 import streamlit as st
 
-from ui.theme import apply_shared_theme, render_page_header
 from ui.tenant.state import (
-    ACTIVITY_KEY,
     ensure_tenant_state,
     get_tenant_by_id,
     projects_for_tenant,
@@ -17,30 +16,52 @@ from ui.tenant.state import (
 )
 
 
-def _card(title: str, value: str, help_text: str = "") -> None:
-    st.markdown("<div class='sqg-card'>", unsafe_allow_html=True)
-    st.caption(title)
-    st.subheader(value)
-    if help_text:
-        st.caption(help_text)
-    st.markdown("</div>", unsafe_allow_html=True)
+def _filter_projects(my_projects: list[dict], mode: str) -> list[dict]:
+    m = (mode or "all").strip().lower()
+    if m == "all":
+        return my_projects
+    if m == "active":
+        return [p for p in my_projects if (p.get("status") or "").lower() == "active"]
+    if m == "archived":
+        return [
+            p
+            for p in my_projects
+            if (p.get("status") or "").lower() in ("archived", "closed", "inactive")
+        ]
+    return my_projects
+
+
+def _metric_block(title: str, value: str, hint: str, icon: str, icon_class: str) -> None:
+    st.markdown(
+        f"""
+<div class="sqg-dash-metric">
+  <div class="sqg-dash-metric-body">
+    <p class="sqg-dmi-title">{html.escape(title)}</p>
+    <p class="sqg-dmi-val">{html.escape(value)}</p>
+    <p class="sqg-dmi-hint">{html.escape(hint)}</p>
+  </div>
+  <div class="sqg-dash-metric-ico {icon_class}" aria-hidden="true">{icon}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_project_row(project: dict, idx: int) -> None:
-    st.markdown("<div class='sqg-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='sqg-dash-proj'>", unsafe_allow_html=True)
     st.markdown(f"**{project['name']}**")
     _t = get_tenant_by_id(project.get("tenant_id") or "") or {}
     if _t.get("name"):
-        st.caption(f"Company (tenant): **`{_t.get('name')}`** · code `{_t.get('code', '—')}`")
+        st.caption(f"Company: **`{_t.get('name')}`**")
     if (project.get("client_code") or "").strip():
         st.caption(f"Label: `{project['client_code'].strip()}`")
-    st.caption(project["description"])
+    st.caption(project.get("description") or "—")
     meta_a, meta_b = st.columns(2)
-    meta_a.caption(f"Status: `{project['status']}`")
-    meta_b.caption(f"Updated: `{project['updated_at']}`")
+    meta_a.caption(f"Status: `{project.get('status', '—')}`")
+    meta_b.caption(f"Updated: `{project.get('updated_at', '—')}`")
 
     a, b, c = st.columns(3)
-    if a.button("Open Project", key=f"open_{idx}", use_container_width=True):
+    if a.button("Open", key=f"open_{idx}", use_container_width=True):
         set_selected_project(project["id"])
         st.switch_page("pages/project_open.py")
     if b.button("Edit", key=f"edit_{idx}", use_container_width=True):
@@ -52,84 +73,169 @@ def _render_project_row(project: dict, idx: int) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_tenant_dashboard() -> None:
-    apply_shared_theme()
-    ensure_tenant_state()
-
-    _dbe = st.session_state.pop("workspace_db_error", None)
-    if _dbe:
-        st.error(
-            f"**Could not load/save workspace in PostgreSQL:** {_dbe}  \n"
-            "Check `DB_*` / `AUTH_DB_*` in `.env`, the `Userdetails` database, and run **Streamlit** with "
-            "working directory `nl_to_sql` so `workspace_store` imports correctly."
-        )
-
-    auth = st.session_state.get("auth_user") or {}
-    username = auth.get("username", "user")
-    tlist = [t for t in tenants() if isinstance(t, dict)]
-    _t_labels = ["All companies"] + [f"{t.get('name', '?')} ({t.get('code', '—')})" for t in tlist]
-    _t_map: dict[str, str] = {"All companies": "__all__"}
-    for t in tlist:
-        _t_map[f"{t.get('name', '?')} ({t.get('code', '—')})"] = t.get("id") or ""
-
-    selected_label = st.selectbox(
-        "Filter by company (tenant)",
-        options=_t_labels,
-        key="dashboard_tenant_filter_widget",
-    )
-    ftid = _t_map.get(selected_label, "__all__")
-    my_projects = projects_for_tenant(ftid)
-    activity = st.session_state[ACTIVITY_KEY]
-
-    render_page_header(
-        "Tenant Dashboard",
-        f"Welcome, {username}. Manage projects and continue your workspace flow.",
-    )
+def _empty_state() -> None:
     st.markdown(
         """
-<div class="nl-banner">
-  <h3>Workspace Overview</h3>
-        <p><b>User → Company (tenant) → Project → DB connection & schema</b> (per project in Configuration). Use <b>Companies</b> in the sidebar to add tenants.</p>
+<div class="sqg-dash-empty">
+  <div class="sqg-dash-empty-icowrap"><span class="sqg-dash-empty-ico" aria-hidden="true">📁➕</span></div>
+  <h3>No projects yet</h3>
+  <p>Create a project, connect your database, then use <b>Chat</b> to turn plain English
+  into SQL and results.</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="sqg-dash-empty-cta-gutter" aria-hidden="true"></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button(
+        "➕ Create your first project",
+        use_container_width=True,
+        type="primary",
+        key="dash_empty_cta",
+    ):
+        st.switch_page("pages/project_create.py")
+
+
+def render_tenant_dashboard() -> None:
+    ensure_tenant_state()
+
+    dbe = st.session_state.pop("workspace_db_error", None)
+    if dbe:
+        st.error(f"Could not load or save projects: {dbe}")
+
+    auth = st.session_state.get("auth_user") or {}
+    username = str(auth.get("username", "user") or "user")
+    tlist = [t for t in tenants() if isinstance(t, dict)]
+    t_labels = ["All companies"] + [str(t.get("name", "?")) for t in tlist]
+    t_map: dict[str, str] = {"All companies": "__all__"}
+    for t in tlist:
+        t_map[str(t.get("name", "?"))] = t.get("id") or ""
+
+    c_title, c_filter, c_companies, c_new = st.columns(
+        [0.75, 0.9, 0.38, 0.52],
+        gap="large",
+        vertical_alignment="center",
+    )
+    with c_title:
+        st.markdown(
+            '<div class="sqg-dash-title"><h1>Projects</h1></div>',
+            unsafe_allow_html=True,
+        )
+    with c_filter:
+        selected_label = st.selectbox(
+            "show_projects_for",
+            options=t_labels,
+            key="dashboard_tenant_filter_widget",
+            help="Filter projects by company, or all companies in your account.",
+            label_visibility="collapsed",
+        )
+    with c_companies:
+        st.page_link("pages/tenants.py", label="Companies", icon="🏬")
+    with c_new:
+        if st.button(
+            "➕ New project",
+            type="primary",
+            use_container_width=False,
+            key="dash_new_proj",
+        ):
+            st.switch_page("pages/project_create.py")
+
+    st.markdown(
+        f"""
+<p class="sqg-dash-sub">Hi {html.escape(username)} — open a project to connect data and ask questions.</p>
+""",
+        unsafe_allow_html=True,
+    )
+
+    ftid = t_map.get(selected_label, "__all__")
+    my_projects = projects_for_tenant(ftid)
+
+    st.markdown(
+        """
+<div class="sqg-dash-info" role="note">
+  <div class="sqg-dash-info-ico">ℹ️</div>
+  <div><strong>How it works</strong> — choose a <span class="sqg-info-kw">company</span> (if you use more
+  than one), then open a <span class="sqg-info-kw">project</span>. Each project has its own
+  <span class="sqg-info-kw">data setup</span> and <span class="sqg-info-kw">chat</span>
+  so answers stay in context.</div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.divider()
-    st.markdown("### Welcome")
-    st.markdown("<div class='sqg-card'>", unsafe_allow_html=True)
-    st.write(
-        "This is your tenant home. Use quick actions below to create or open projects, "
-        "then jump into NL-to-SQL exploration."
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("### Project Summary")
     c1, c2, c3 = st.columns(3)
     c1_metric = str(len(my_projects))
-    c2_metric = str(sum(1 for p in my_projects if p["status"].lower() == "active"))
+    c2_metric = str(sum(1 for p in my_projects if (p.get("status") or "").lower() == "active"))
     c3_metric = datetime.now().strftime("%d %b %Y")
     with c1:
-        _card("Total Projects", c1_metric, "All projects in your tenant.")
+        _metric_block(
+            "Total projects",
+            c1_metric,
+            "All projects in your tenant",
+            "▣",
+            "sqg-dmi-grid",
+        )
     with c2:
-        _card("Active Projects", c2_metric, "Currently active workspaces.")
+        _metric_block("Active workspaces", c2_metric, "Currently active", "▶", "sqg-dmi-pulse")
     with c3:
-        _card("Today", c3_metric, "Dashboard snapshot date.")
+        _metric_block("Snapshot date", c3_metric, "Dashboard snapshot", "▦", "sqg-dmi-cal")
 
-    st.markdown("### My Projects")
-    top_left, top_mid, _ = st.columns([1, 1, 3])
-    if top_left.button("Create Project", use_container_width=True):
-        st.switch_page("pages/project_create.py")
-    if top_mid.button("Companies (tenants)", use_container_width=True):
-        st.switch_page("pages/3_Tenants.py")
-    if not my_projects:
-        st.info("No projects yet. Click Create Project to get started.")
-    for idx, project in enumerate(my_projects):
-        _render_project_row(project, idx)
+    st.markdown("---")
+    if "dashboard_project_view_tab" in st.session_state:
+        _r = st.session_state.pop("dashboard_project_view_tab", "All")
+        st.session_state["dashboard_proj_mode"] = {
+            "All": "all",
+            "Active": "active",
+            "Archived": "archived",
+        }.get(_r if isinstance(_r, str) else str(_r), "all")
+    st.session_state.setdefault("dashboard_proj_mode", "all")
 
-    st.markdown("### Recent Activity")
-    st.markdown("<div class='sqg-card'>", unsafe_allow_html=True)
-    for item in activity:
-        st.write(f"- {item}")
-    st.caption("Frontend-only placeholder. Connect backend activity feed later.")
-    st.markdown("</div>", unsafe_allow_html=True)
+    pm = st.session_state.dashboard_proj_mode
+    h_left, b_all, b_act, b_arch = st.columns(
+        [1.25, 0.16, 0.2, 0.24],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with h_left:
+        st.markdown(
+            '<p class="sqg-dash-sec sqg-dash-sec--row">My projects</p>',
+            unsafe_allow_html=True,
+        )
+    with b_all:
+        if st.button(
+            "All",
+            type="primary" if pm == "all" else "secondary",
+            use_container_width=True,
+            key="dpm_all",
+        ):
+            st.session_state.dashboard_proj_mode = "all"
+    with b_act:
+        if st.button(
+            "Active",
+            type="primary" if pm == "active" else "secondary",
+            use_container_width=True,
+            key="dpm_active",
+        ):
+            st.session_state.dashboard_proj_mode = "active"
+    with b_arch:
+        if st.button(
+            "Archived",
+            type="primary" if pm == "archived" else "secondary",
+            use_container_width=True,
+            key="dpm_arch",
+        ):
+            st.session_state.dashboard_proj_mode = "archived"
+
+    mode = st.session_state.dashboard_proj_mode
+    filtered = _filter_projects(my_projects, mode)
+
+    if not filtered:
+        if not my_projects:
+            _empty_state()
+        else:
+            st.info("No projects match this filter. Try a different view or company selection.")
+    else:
+        for idx, project in enumerate(filtered):
+            _render_project_row(project, idx)
