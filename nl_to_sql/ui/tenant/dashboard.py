@@ -52,7 +52,7 @@ def _render_project_row(project: dict, idx: int) -> None:
     st.markdown(f"**{project['name']}**")
     _t = get_tenant_by_id(project.get("tenant_id") or "") or {}
     if _t.get("name"):
-        st.caption(f"Company: **`{_t.get('name')}`** — `{_t.get('code', '—')}`")
+        st.caption(f"Company: **`{_t.get('name')}`**")
     if (project.get("client_code") or "").strip():
         st.caption(f"Label: `{project['client_code'].strip()}`")
     st.caption(project.get("description") or "—")
@@ -108,10 +108,10 @@ def render_tenant_dashboard() -> None:
     auth = st.session_state.get("auth_user") or {}
     username = str(auth.get("username", "user") or "user")
     tlist = [t for t in tenants() if isinstance(t, dict)]
-    t_labels = ["All companies"] + [f"{t.get('name', '?')} ({t.get('code', '—')})" for t in tlist]
+    t_labels = ["All companies"] + [str(t.get("name", "?")) for t in tlist]
     t_map: dict[str, str] = {"All companies": "__all__"}
     for t in tlist:
-        t_map[f"{t.get('name', '?')} ({t.get('code', '—')})"] = t.get("id") or ""
+        t_map[str(t.get("name", "?"))] = t.get("id") or ""
 
     c_title, c_filter, c_companies, c_new = st.columns(
         [0.75, 0.9, 0.38, 0.52],

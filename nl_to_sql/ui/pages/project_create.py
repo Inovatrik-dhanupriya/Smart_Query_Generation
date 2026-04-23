@@ -31,8 +31,8 @@ with st.sidebar:
 render_page_header("Create Project", "Create a new workspace project.")
 
 _tn_list = [t for t in tenants() if isinstance(t, dict)]
-_tn_labels = [f"{t.get('name', '?')} ({t.get('code', '—')})" for t in _tn_list]
-_tn_by_label = {f"{t.get('name', '?')} ({t.get('code', '—')})": t.get("id") for t in _tn_list}
+_tn_labels = [str(t.get("name", "?")) for t in _tn_list]
+_tn_by_label = {str(t.get("name", "?")): t.get("id") for t in _tn_list}
 
 with st.form("create_project_form", clear_on_submit=False):
     _sel_t = st.selectbox(

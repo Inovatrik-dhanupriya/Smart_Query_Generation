@@ -118,14 +118,14 @@ def render_auth_styles() -> None:
           .auth-progress span { flex: 1; background: #3f3f46; }
           .auth-progress span.on { background: #a78bfa; }
 
-          /* Form: left-aligned, light inputs (QueryBase) */
+          /* Form: left-aligned, high-contrast dark inputs (professional + readable) */
           body.auth-sqg-landing [data-testid="stForm"] {
             max-width: 420px; width: 100%; text-align: left; margin: 0 !important; padding: 0 !important;
             background: transparent !important; border: none !important; box-shadow: none !important;
             border-radius: 0 !important;
           }
           body.auth-sqg-landing [data-testid="stForm"] label {
-            text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.65rem !important; color: #94a3b8 !important;
+            text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.65rem !important; color: #cbd5e1 !important;
             font-weight: 600 !important; justify-content: flex-start !important; text-align: left;
           }
           body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="form-control-container"] {
@@ -133,8 +133,32 @@ def render_auth_styles() -> None:
           }
           body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"] {
             max-width: 100% !important; align-self: stretch;
-            background: #fff !important; border: 1px solid #e4e4e7 !important; border-radius: 8px !important;
-            color: #0f172a !important; min-height: 42px;
+            background: #0f172a !important;
+            border: 1px solid #334155 !important;
+            border-radius: 8px !important;
+            color: #f8fafc !important;
+            min-height: 42px;
+            transition: border-color .15s ease, box-shadow .15s ease;
+          }
+          body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"] input {
+            color: #f8fafc !important;
+            caret-color: #f8fafc !important;
+            -webkit-text-fill-color: #f8fafc !important;
+            font-weight: 500 !important;
+          }
+          body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"] input::placeholder {
+            color: #94a3b8 !important;
+            opacity: 1 !important;
+          }
+          body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"]:focus-within {
+            border-color: #7c3aed !important;
+            box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.18) !important;
+          }
+          body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"] button,
+          body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"] svg,
+          body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="input"] path {
+            color: #cbd5e1 !important;
+            fill: #cbd5e1 !important;
           }
           body.auth-sqg-landing [data-testid="stForm"] [data-testid="stFormSubmitButton"] {
             width: 100%; border-radius: 8px; margin-top: 0.25rem;

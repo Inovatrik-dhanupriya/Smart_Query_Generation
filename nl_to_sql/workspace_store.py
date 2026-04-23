@@ -29,6 +29,34 @@ def ensure_backend() -> None:
     prep()
 
 
+def _row_first(row: Any) -> Any:
+    """Return first column value for dict/tuple DB rows."""
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        if row:
+            return next(iter(row.values()))
+        return None
+    if isinstance(row, (list, tuple)):
+        return row[0] if row else None
+    return None
+
+
+def _preferred_default_tenant_name(user_id: int) -> str:
+    """Best-effort company name from auth profile for default tenant label."""
+    get_app_db_cursor, _ = _db()
+    with get_app_db_cursor() as cur:
+        cur.execute(
+            "SELECT company_name FROM public.auth_users WHERE id = %s LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    name = str(_row_first(row) or "").strip()
+    if name:
+        return name
+    return "Default company"
+
+
 def _fmt(v: Any) -> str:
     if v is None:
         return "—"
@@ -41,19 +69,32 @@ def _fmt(v: Any) -> str:
 def ensure_default_tenant_row(user_id: int) -> None:
     """Insert default company row for this user if none exist (matches UI default tenant id)."""
     get_app_db_cursor, _ = _db()
+    preferred_name = _preferred_default_tenant_name(user_id)
     with get_app_db_cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM public.app_workspace_tenants WHERE user_id = %s AND id = %s",
+            "SELECT name FROM public.app_workspace_tenants WHERE user_id = %s AND id = %s",
             (user_id, DEFAULT_TENANT_ID),
         )
-        if cur.fetchone() is not None:
+        row = cur.fetchone()
+        if row is not None:
+            existing_name = str(_row_first(row) or "").strip().lower()
+            # Backfill old placeholder labels for accounts that already had a default tenant.
+            if existing_name in ("", "default company") and preferred_name.lower() != "default company":
+                cur.execute(
+                    """
+                    UPDATE public.app_workspace_tenants
+                    SET name = %s, updated_at = NOW()
+                    WHERE user_id = %s AND id = %s
+                    """,
+                    (preferred_name, user_id, DEFAULT_TENANT_ID),
+                )
             return
         cur.execute(
             """
-            INSERT INTO public.app_workspace_tenants (user_id, id, name, code, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, NOW(), NOW())
+            INSERT INTO public.app_workspace_tenants (user_id, id, name, created_at, updated_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
             """,
-            (user_id, DEFAULT_TENANT_ID, "Default company", "MAIN"),
+            (user_id, DEFAULT_TENANT_ID, preferred_name),
         )
 
 
@@ -62,7 +103,7 @@ def load_tenants(user_id: int) -> list[dict]:
     with get_app_db_cursor() as cur:
         cur.execute(
             """
-            SELECT id, name, code, created_at, updated_at
+            SELECT id, name, created_at, updated_at
             FROM public.app_workspace_tenants
             WHERE user_id = %s
             ORDER BY name ASC, id ASC
@@ -78,7 +119,6 @@ def load_tenants(user_id: int) -> list[dict]:
             {
                 "id": r["id"],
                 "name": r["name"],
-                "code": r.get("code") or "",
                 "updated_at": _fmt(r.get("updated_at")),
             }
         )
@@ -127,12 +167,12 @@ def db_upsert_tenant(user_id: int, t: dict) -> None:
     with get_app_db_cursor() as cur:
         cur.execute(
             """
-            INSERT INTO public.app_workspace_tenants (user_id, id, name, code, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, NOW(), NOW())
+            INSERT INTO public.app_workspace_tenants (user_id, id, name, created_at, updated_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
             ON CONFLICT (user_id, id) DO UPDATE
-            SET name = EXCLUDED.name, code = EXCLUDED.code, updated_at = NOW()
+            SET name = EXCLUDED.name, updated_at = NOW()
             """,
-            (user_id, t["id"], t["name"], t.get("code") or ""),
+            (user_id, t["id"], t["name"]),
         )
 
 

@@ -1711,6 +1711,17 @@ def signup_endpoint(request: Request, req: SignUpRequest):
             )
             row = cur.fetchone()
             user_id = int(row["id"]) if row else None
+            if user_id is not None:
+                tenant_name = (req.company_name or "").strip()
+                cur.execute(
+                    """
+                    INSERT INTO public.app_workspace_tenants (user_id, id, name, created_at, updated_at)
+                    VALUES (%s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (user_id, id) DO UPDATE
+                    SET name = EXCLUDED.name, updated_at = NOW()
+                    """,
+                    (user_id, "ten-default", tenant_name),
+                )
 
         return SignUpResponse(ok=True, message="Account created successfully.", user_id=user_id)
     except HTTPException:

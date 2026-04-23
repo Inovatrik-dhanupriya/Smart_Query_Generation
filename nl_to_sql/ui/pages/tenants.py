@@ -45,18 +45,14 @@ st.info(
 )
 
 with st.form("new_tenant"):
-    c1, c2 = st.columns(2)
-    with c1:
-        t_name = st.text_input("Company name", placeholder="e.g. Acme Corp")
-    with c2:
-        t_code = st.text_input("Short code", placeholder="e.g. ACME")
+    t_name = st.text_input("Company name", placeholder="e.g. Acme Corp")
     add = st.form_submit_button("Add company", use_container_width=True)
 
 if add:
     if not (t_name or "").strip():
         st.error("Company name is required.")
     else:
-        t = create_tenant(name=t_name, code=t_code)
+        t = create_tenant(name=t_name)
         if t is None:
             st.error(st.session_state.get("workspace_db_error") or "Could not save to the database.")
         else:
@@ -70,7 +66,7 @@ for t in tenants():
     if not isinstance(t, dict):
         continue
     with st.container():
-        st.markdown(f"**{t.get('name', '—')}** · code `{t.get('code', '—')}` · `{t.get('id', '')}`")
+        st.markdown(f"**{t.get('name', '—')}** · `{t.get('id', '')}`")
         if t.get("id") != DEFAULT_TENANT_ID:
             if st.button("Delete", key=f"del_{t.get('id')}", type="secondary"):
                 if delete_tenant(t.get("id") or ""):
