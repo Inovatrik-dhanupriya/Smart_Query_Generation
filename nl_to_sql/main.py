@@ -90,7 +90,19 @@ from sql_engine import (
     validate_sql,
     validate_sql_tables_against_schema,
 )
+<<<<<<< HEAD
 from db import get_app_db_cursor, prepare_app_auth_backend
+=======
+from db import (
+    ensure_auth_tables,
+    # ------------------start ------------------------------------
+    ensure_project_db_connections_table,
+    ensure_projects_table,
+    # ------------------end ------------------------------------
+    ensure_userdetails_database,
+    get_app_db_cursor,
+)
+>>>>>>> c421207 (WIP: project DB setup)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -462,7 +474,18 @@ def _extract_schema_with_reader_repair() -> tuple[dict, dict]:
 async def lifespan(app: FastAPI):
     # App auth DB (Userdetails + public.auth_users). Uses DB_ADMIN_* or DB_USER/DB_PASSWORD.
     try:
+<<<<<<< HEAD
         prepare_app_auth_backend()
+=======
+        created = ensure_userdetails_database()
+        if created:
+            log.info("App-level database created successfully.")
+        else:
+            log.info("App-level database already present.")
+        ensure_auth_tables()
+        ensure_projects_table()
+        ensure_project_db_connections_table()
+>>>>>>> c421207 (WIP: project DB setup)
         log.info("Auth schema is ready in app-level database.")
     except Exception as e:
         log.warning(

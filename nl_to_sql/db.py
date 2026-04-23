@@ -371,6 +371,85 @@ def ensure_auth_tables() -> None:
     finally:
         conn.close()
 
+# ------start of new code------------------------------------------------------------------------------------
+def ensure_projects_table() -> None:
+    """
+    Create projects table in USER_DETAILS_DATABASE_NAME if missing.
+
+    Each project belongs to an auth user via ``user_id -> auth_users(id)``.
+    """
+    target_db = _app_db_name()
+    conn = _connect_admin(target_db)
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.projects (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES public.auth_users(id) ON DELETE CASCADE,
+                    project_name VARCHAR(255) NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    status VARCHAR(16) NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'inactive')),
+                    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_projects_user_id
+                ON public.projects (user_id)
+                """
+            )
+        conn.commit()
+        log.info("Ensured projects table in app database %r.", target_db)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def ensure_project_db_connections_table() -> None:
+    """
+    Create project_db_connections table in USER_DETAILS_DATABASE_NAME if missing.
+
+    One project maps to one DB connection (UNIQUE project_id).
+    """
+    target_db = _app_db_name()
+    conn = _connect_admin(target_db)
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.project_db_connections (
+                    id BIGSERIAL PRIMARY KEY,
+                    project_id BIGINT NOT NULL
+                        REFERENCES public.projects(id) ON DELETE CASCADE,
+                    db_type VARCHAR(32) NOT NULL DEFAULT 'postgres',
+                    host VARCHAR(255) NOT NULL,
+                    port INTEGER NOT NULL DEFAULT 5432,
+                    database_name VARCHAR(255) NOT NULL,
+                    username VARCHAR(255) NOT NULL,
+                    password TEXT NOT NULL,
+                    schemas_to_scan TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_project_db_connections_project_id UNIQUE (project_id)
+                )
+                """
+            )
+        conn.commit()
+        log.info("Ensured project_db_connections table in app database %r.", target_db)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+# ------end of new code------------------------------------------------------------------------------------
 
 _app_auth_backend_prepared: bool = False
 _app_auth_backend_lock = threading.Lock()
