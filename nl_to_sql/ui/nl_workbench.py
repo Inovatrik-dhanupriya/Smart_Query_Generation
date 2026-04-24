@@ -178,7 +178,7 @@ def _render_configuration_getting_started() -> None:
     <style>
       .cfg-shell { margin-top: 0.15rem; }
       .cfg-kicker {
-        color: #9ca3af;
+        color: #94a3b8;
         font-size: 0.66rem;
         letter-spacing: 0.14em;
         text-transform: uppercase;
@@ -186,15 +186,15 @@ def _render_configuration_getting_started() -> None:
         margin: 0.1rem 0 0.45rem 0;
       }
       .cfg-card {
-        background: #ffffff;
-        border: 1px solid #e5e7eb;
+        background: rgba(15, 23, 42, 0.78);
+        border: 1px solid rgba(148, 163, 184, 0.24);
         border-radius: 10px;
         padding: 0.82rem 0.95rem;
         margin-bottom: 0.42rem;
       }
       .cfg-card--info {
-        background: #f8fafc;
-        border-color: #e2e8f0;
+        background: rgba(30, 41, 59, 0.72);
+        border-color: rgba(148, 163, 184, 0.34);
       }
       .cfg-row {
         display: flex;
@@ -213,12 +213,12 @@ def _render_configuration_getting_started() -> None:
         height: 1rem;
         min-width: 1rem;
         border-radius: 999px;
-        border: 1px solid #c7d2fe;
+        border: 1px solid rgba(167, 139, 250, 0.45);
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        color: #6366f1;
-        background: #eef2ff;
+        color: #c4b5fd;
+        background: rgba(124, 58, 237, 0.2);
         font-size: 0.64rem;
         line-height: 1;
         margin-top: 0.1rem;
@@ -228,9 +228,9 @@ def _render_configuration_getting_started() -> None:
         height: 1rem;
         min-width: 1rem;
         border-radius: 999px;
-        border: 1px solid #ddd6fe;
-        color: #6d28d9;
-        background: #f5f3ff;
+        border: 1px solid rgba(167, 139, 250, 0.45);
+        color: #ddd6fe;
+        background: rgba(124, 58, 237, 0.28);
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -239,34 +239,34 @@ def _render_configuration_getting_started() -> None:
       }
       .cfg-title {
         margin: 0;
-        color: #111827;
+        color: #e2e8f0;
         font-weight: 700;
         font-size: 0.88rem;
         line-height: 1.35;
       }
       .cfg-desc {
         margin: 0.15rem 0 0 0;
-        color: #6b7280;
+        color: #cbd5e1;
         font-size: 0.77rem;
         line-height: 1.45;
       }
       .cfg-chip {
-        background: #f3f4f6;
-        border: 1px solid #e5e7eb;
-        color: #374151;
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.32);
+        color: #e2e8f0;
         border-radius: 6px;
         padding: 0.06rem 0.32rem;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         font-size: 0.7rem;
       }
       .cfg-note {
-        color: #9ca3af;
+        color: #94a3b8;
         font-size: 0.74rem;
         margin-top: 0.2rem;
         text-align: center;
       }
       .cfg-chevron {
-        color: #9ca3af;
+        color: #94a3b8;
         font-size: 0.95rem;
         line-height: 1;
         margin-left: 0.4rem;
@@ -491,14 +491,14 @@ def _apply_configuration_ui_redesign_styles() -> None:
           }
           .cfg-main-title {
             margin: 0;
-            color: #111827;
+            color: #f8fafc;
             font-size: 2.05rem;
             font-weight: 800;
             letter-spacing: -0.01em;
           }
           .cfg-main-subtitle {
             margin: 0.2rem 0 0.8rem 0;
-            color: #6b7280;
+            color: #cbd5e1;
             font-size: 0.92rem;
           }
           .cfg-user-chip-main {
@@ -562,26 +562,26 @@ def _apply_configuration_ui_redesign_styles() -> None:
             border-width: 1px !important;
           }
           section.main [data-testid="stAlert"][kind="warning"] {
-            background: #fffbeb !important;
-            border-color: #fde68a !important;
+            background: rgba(120, 53, 15, 0.25) !important;
+            border-color: rgba(251, 191, 36, 0.45) !important;
           }
           section.main [data-testid="stAlert"][kind="warning"] * {
-            color: #b45309 !important;
+            color: #fcd34d !important;
           }
           section.main [data-testid="stAlert"][kind="info"] {
-            background: #eff6ff !important;
-            border-color: #bfdbfe !important;
+            background: rgba(30, 58, 138, 0.2) !important;
+            border-color: rgba(96, 165, 250, 0.42) !important;
           }
           section.main [data-testid="stAlert"][kind="info"] * {
-            color: #1e3a8a !important;
+            color: #bfdbfe !important;
           }
-          /* Main content panel (right side) to match light screenshot */
+          /* Main content panel aligned with dashboard dark theme */
           section.main {
-            background: #f3f4f6 !important;
+            background: transparent !important;
           }
           section.main > div.block-container {
-            background: #ffffff !important;
-            border: 1px solid #e5e7eb !important;
+            background: transparent !important;
+            border: none !important;
             border-radius: 12px !important;
             padding: 1.05rem 1.25rem 1.25rem !important;
             margin-top: 0.65rem !important;
@@ -601,151 +601,33 @@ def _apply_configuration_ui_redesign_styles() -> None:
 def _render_no_active_project_state(page_name: str = "chat") -> None:
     """Styled empty state when no project is selected (Chat / Configuration)."""
     page = (page_name or "chat").strip().lower()
-    action_text = "starting chat sessions" if page == "chat" else "opening configuration"
+    _render_workbench_sidebar_shell("signout_wb_no_project")
+
+    page_title = "Chat" if page == "chat" else "Configuration"
     followup_text = (
-        "Once selected, you can connect your database and ask questions in natural language."
+        "Open a project from the dashboard to start asking questions in natural language."
         if page == "chat"
-        else "Once selected, you can connect your database, activate schema, and continue setup."
+        else "Open a project from the dashboard to configure your data source and activate schema."
     )
 
+    st.markdown(f'<div class="sqg-dash-title"><h1>{page_title}</h1></div>', unsafe_allow_html=True)
     st.markdown(
-        """
-        <style>
-          [data-testid="stSidebarUserContent"] {
-            display: flex;
-            flex-direction: column;
-            min-height: calc(100vh - 4rem);
-          }
-          .np-sb-bottom { margin-top: auto; }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a {
-            color: #e2e8f0 !important;
-            background: #172038 !important;
-            border: 1px solid #2a3a5e !important;
-            border-radius: 8px !important;
-            padding: 0.45rem 0.55rem !important;
-            text-decoration: none !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a *,
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-            color: #e2e8f0 !important;
-            fill: #e2e8f0 !important;
-            opacity: 1 !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
-            border-color: #3f5480 !important;
-            background: #1b2642 !important;
-          }
-        </style>
-        """,
+        '<p class="sqg-dash-sub">Project context is required before continuing.</p>',
         unsafe_allow_html=True,
     )
-    with st.sidebar:
-        st.page_link("pages/dashboard.py", label="Back to dashboard", icon="🏠")
-        st.markdown(
-            """
-            <div class="np-sb-bottom">
-              <p style="margin:0 0 .35rem 0;color:#8ea2c2;font-size:.74rem;text-transform:uppercase;letter-spacing:.08em;">Recent activity</p>
-              <p style="margin:0;color:#97aac7;font-size:.82rem;">• Waiting for project…</p>
-              <p style="margin:.25rem 0 0 0;color:#97aac7;font-size:.82rem;">• Security: OK</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    _no_project_html = """
-        <style>
-          .np-wrap {
-            position: relative;
-            min-height: 78vh;
-            border-radius: 14px;
-            overflow: hidden;
-            border: 1px solid #17263d;
-            background:
-              linear-gradient(180deg, rgba(8,17,32,0.96) 0%, rgba(7,14,28,0.96) 100%);
-          }
-          .np-wrap::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            background-image:
-              linear-gradient(rgba(53,88,135,0.14) 1px, transparent 1px),
-              linear-gradient(90deg, rgba(53,88,135,0.14) 1px, transparent 1px);
-            background-size: 36px 36px;
-            opacity: 0.42;
-            pointer-events: none;
-          }
-          .np-center {
-            position: relative;
-            z-index: 1;
-            min-height: 78vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 1.5rem;
-            text-align: center;
-          }
-          .np-card { max-width: 560px; }
-          .np-icon {
-            width: 64px;
-            height: 64px;
-            border-radius: 14px;
-            margin: 0 auto 0.9rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.35rem;
-            color: #fca5a5;
-            background: rgba(127, 29, 29, 0.24);
-            border: 1px solid rgba(248, 113, 113, 0.35);
-            box-shadow: 0 10px 26px rgba(0,0,0,0.35);
-          }
-          .np-title {
-            margin: 0;
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #f8fafc;
-            letter-spacing: -0.01em;
-          }
-          .np-sub {
-            margin: 0.6rem auto 1rem;
-            max-width: 520px;
-            color: #9fb3d1;
-            line-height: 1.5;
-            font-size: 0.95rem;
-          }
-          .np-btn-wrap { margin-top: 1rem; }
-          .np-action-row { margin-top: 1.25rem; }
-        </style>
-        <div class="np-wrap">
-          <div class="np-center">
-            <div class="np-card">
-              <div class="np-icon">!</div>
-              <h2 class="np-title">No active project</h2>
-              <p class="np-sub">
-                Open or create a project from the dashboard before __ACTION_TEXT__.
-                __FOLLOWUP_TEXT__
-              </p>
-              <div class="np-btn-wrap"></div>
-            </div>
-          </div>
-        </div>
-        """
     st.markdown(
-        _no_project_html.replace("__ACTION_TEXT__", action_text).replace(
-            "__FOLLOWUP_TEXT__", followup_text
+        (
+            '<div class="sqg-dash-info">'
+            '<b>No active project selected.</b> '
+            f"{followup_text}"
+            "</div>"
         ),
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="np-action-row"></div>', unsafe_allow_html=True)
-    _, c1, _ = st.columns([2, 1.4, 2])
-    with c1:
-        if st.button(
-            "Go to dashboard",
-            key="np_go_dashboard",
-            type="primary",
-            use_container_width=True,
-        ):
+
+    _l, _c, _r = st.columns([1.8, 1.4, 1.8])
+    with _c:
+        if st.button("Go to dashboard", key="np_go_dashboard", type="primary", use_container_width=True):
             st.switch_page("pages/dashboard.py")
 
 
@@ -1944,9 +1826,9 @@ def run() -> None:
         _cfg_initial = (_cfg_user[:1] if isinstance(_cfg_user, str) and _cfg_user else "U").upper()
         _cfg_l, _cfg_r = st.columns([7.0, 2.0], gap="small")
         with _cfg_l:
-            st.markdown('<h1 class="cfg-main-title">Configuration</h1>', unsafe_allow_html=True)
+            st.markdown('<div class="sqg-dash-title"><h1>Configuration</h1></div>', unsafe_allow_html=True)
             st.markdown(
-                '<p class="cfg-main-subtitle">Set up your data source and activate the sidebar assistant.</p>',
+                '<p class="sqg-dash-sub">Set up your data source and activate the sidebar assistant.</p>',
                 unsafe_allow_html=True,
             )
         with _cfg_r:

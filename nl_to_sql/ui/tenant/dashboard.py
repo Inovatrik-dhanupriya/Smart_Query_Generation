@@ -8,6 +8,7 @@ from datetime import datetime
 import streamlit as st
 
 from ui.tenant.state import (
+    delete_project,
     ensure_tenant_state,
     get_tenant_by_id,
     projects_for_tenant,
@@ -46,27 +47,32 @@ def _metric_block(title: str, value: str, hint: str, icon: str, icon_class: str)
 
 def _render_project_row(project: dict, idx: int) -> None:
     st.markdown("<div class='sqg-dash-proj'>", unsafe_allow_html=True)
-    st.markdown(f"**{html.escape(project['name'])}**")
+    st.markdown(
+        f'<p class="sqg-dash-proj-title" style="font-size:1.58rem;font-weight:900;line-height:1.2;letter-spacing:-0.01em;margin:0 0 0.55rem 0;color:#1e1b2e;">{html.escape(project["name"])}</p>',
+        unsafe_allow_html=True,
+    )
     _t = get_tenant_by_id(project.get("tenant_id") or "") or {}
     if _t.get("name"):
         _cn = html.escape(str(_t.get("name") or ""))
         st.markdown(
-            f'<p class="sqg-dash-proj-line">Company: <strong>{_cn}</strong></p>',
+            f'<p class="sqg-dash-proj-line"><span class="sqg-dash-proj-label" style="font-size:0.78rem;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:0.02em;">Company:</span> <span class="sqg-dash-proj-value" style="font-size:0.96rem;color:#312e81;font-weight:700;">{_cn}</span></p>',
             unsafe_allow_html=True,
         )
     st.markdown(
-        f'<p class="sqg-dash-proj-line">{html.escape(str(project.get("description") or "—"))}</p>',
+        f'<p class="sqg-dash-proj-line sqg-dash-proj-desc" style="font-weight:700;">{html.escape(str(project.get("description") or "—"))}</p>',
         unsafe_allow_html=True,
     )
     meta_a, meta_b = st.columns(2)
     with meta_a:
+        _status = str(project.get("status", "—"))
+        _status_display = _status.strip().capitalize() if _status.strip() else "—"
         st.markdown(
-            f'<p class="sqg-dash-proj-line">Status: <code>{html.escape(str(project.get("status", "—")))}</code></p>',
+            f'<p class="sqg-dash-proj-line"><span class="sqg-dash-proj-label sqg-dash-proj-label--subtle">Status</span> <span class="sqg-dash-status-badge" style="margin-left:0.6rem;font-weight:700;">{html.escape(_status_display)}</span></p>',
             unsafe_allow_html=True,
         )
     with meta_b:
         st.markdown(
-            f'<p class="sqg-dash-proj-line">Updated: <code>{html.escape(str(project.get("updated_at", "—")))}</code></p>',
+            f'<p class="sqg-dash-proj-line sqg-dash-proj-line--right"><span class="sqg-dash-proj-label">Updated:</span> <span class="sqg-dash-proj-meta">{html.escape(str(project.get("updated_at", "—")))}</span></p>',
             unsafe_allow_html=True,
         )
 
@@ -78,8 +84,8 @@ def _render_project_row(project: dict, idx: int) -> None:
         set_selected_project(project["id"])
         st.switch_page("pages/project_edit.py")
     if c.button("Delete", key=f"delete_{idx}", use_container_width=True):
-        set_selected_project(project["id"])
-        st.switch_page("pages/project_delete.py")
+        st.session_state["dashboard_delete_project_id"] = project["id"]
+        st.session_state["dashboard_delete_project_name"] = project.get("name") or "this project"
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -110,6 +116,8 @@ def _empty_state() -> None:
 
 def render_tenant_dashboard() -> None:
     ensure_tenant_state()
+    st.session_state.setdefault("dashboard_delete_project_id", None)
+    st.session_state.setdefault("dashboard_delete_project_name", "")
 
     dbe = st.session_state.pop("workspace_db_error", None)
     if dbe:
@@ -249,3 +257,29 @@ def render_tenant_dashboard() -> None:
     else:
         for idx, project in enumerate(filtered):
             _render_project_row(project, idx)
+
+    delete_id = st.session_state.get("dashboard_delete_project_id")
+    if delete_id:
+        delete_name = str(st.session_state.get("dashboard_delete_project_name") or "this project")
+
+        @st.dialog("Confirm delete")
+        def _confirm_delete_dialog() -> None:
+            st.warning(
+                f"Delete **{html.escape(delete_name)}**? This action cannot be undone."
+            )
+            left, right = st.columns(2)
+            with left:
+                if st.button("Cancel", use_container_width=True, key="dash_delete_cancel"):
+                    st.session_state["dashboard_delete_project_id"] = None
+                    st.session_state["dashboard_delete_project_name"] = ""
+            with right:
+                if st.button("Delete project", type="primary", use_container_width=True, key="dash_delete_confirm"):
+                    ok = delete_project(str(delete_id))
+                    st.session_state["dashboard_delete_project_id"] = None
+                    st.session_state["dashboard_delete_project_name"] = ""
+                    if ok:
+                        st.success("Project deleted.")
+                    else:
+                        st.error("Could not delete project. Please try again.")
+
+        _confirm_delete_dialog()

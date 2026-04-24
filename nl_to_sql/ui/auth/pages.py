@@ -116,9 +116,9 @@ def render_sign_up_page(go_to_sign_in: Callable[[], None]) -> None:
 
     def _form() -> None:
         with st.form("sign_up_form", clear_on_submit=False):
+            username = st.text_input("Username", placeholder="Choose a username")
             email = st.text_input("Email", placeholder="Enter your email")
             company_name = st.text_input("Company Name", placeholder="Enter your company name")
-            username = st.text_input("Username", placeholder="Choose a username")
             password = st.text_input(
                 "Password",
                 placeholder="Create a password",
