@@ -23,11 +23,8 @@ def _filter_projects(my_projects: list[dict], mode: str) -> list[dict]:
     if m == "active":
         return [p for p in my_projects if (p.get("status") or "").lower() == "active"]
     if m == "archived":
-        return [
-            p
-            for p in my_projects
-            if (p.get("status") or "").lower() in ("archived", "closed", "inactive")
-        ]
+        _end = frozenset({"archived", "completed", "closed", "inactive"})
+        return [p for p in my_projects if (p.get("status") or "").lower() in _end]
     return my_projects
 
 
@@ -49,16 +46,29 @@ def _metric_block(title: str, value: str, hint: str, icon: str, icon_class: str)
 
 def _render_project_row(project: dict, idx: int) -> None:
     st.markdown("<div class='sqg-dash-proj'>", unsafe_allow_html=True)
-    st.markdown(f"**{project['name']}**")
+    st.markdown(f"**{html.escape(project['name'])}**")
     _t = get_tenant_by_id(project.get("tenant_id") or "") or {}
     if _t.get("name"):
-        st.caption(f"Company: **`{_t.get('name')}`**")
-    if (project.get("client_code") or "").strip():
-        st.caption(f"Label: `{project['client_code'].strip()}`")
-    st.caption(project.get("description") or "—")
+        _cn = html.escape(str(_t.get("name") or ""))
+        st.markdown(
+            f'<p class="sqg-dash-proj-line">Company: <strong>{_cn}</strong></p>',
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        f'<p class="sqg-dash-proj-line">{html.escape(str(project.get("description") or "—"))}</p>',
+        unsafe_allow_html=True,
+    )
     meta_a, meta_b = st.columns(2)
-    meta_a.caption(f"Status: `{project.get('status', '—')}`")
-    meta_b.caption(f"Updated: `{project.get('updated_at', '—')}`")
+    with meta_a:
+        st.markdown(
+            f'<p class="sqg-dash-proj-line">Status: <code>{html.escape(str(project.get("status", "—")))}</code></p>',
+            unsafe_allow_html=True,
+        )
+    with meta_b:
+        st.markdown(
+            f'<p class="sqg-dash-proj-line">Updated: <code>{html.escape(str(project.get("updated_at", "—")))}</code></p>',
+            unsafe_allow_html=True,
+        )
 
     a, b, c = st.columns(3)
     if a.button("Open", key=f"open_{idx}", use_container_width=True):

@@ -3,6 +3,7 @@ NL → SQL workbench — shared UI for the Configuration and Chat pages.
 """
 from __future__ import annotations
 
+import html
 import sys
 from pathlib import Path
 
@@ -45,7 +46,8 @@ _API_PORT = urlparse(API_URL).port or (443 if urlparse(API_URL).scheme == "https
 
 
 
-from ui.theme import apply_shared_theme
+from ui.auth.session import clear_auth_session
+from ui.theme import apply_dashboard_theme
 from ui.tenant.project_context import apply_project_workspace, get_active_project_id
 from ui.tenant.state import (
     ensure_tenant_state,
@@ -64,6 +66,50 @@ def set_workbench_page(name: str) -> None:
 
 def workbench_page() -> str:
     return _NL_WB_PAGE
+
+
+def _render_workbench_sidebar_shell(signout_key: str) -> None:
+    _auth = st.session_state.auth_user or {}
+    _uname = str(_auth.get("username", "user") or "user")
+    _init = (html.escape(_uname[:1] or "?")).upper()
+    _display = html.escape(_uname)
+
+    with st.sidebar:
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem">
+              <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
+                <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
+                  <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
+                  <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
+                  <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
+                </span>
+              </span>
+              <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
+            </div>
+            <div class="sqg-sb-user">
+              <div class="sqg-sb-av">{_init}</div>
+              <div>
+                <div class="sqg-sb-name">{_display}</div>
+                <div class="sqg-sb-role">Member</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("WORKSPACE")
+        st.page_link("pages/dashboard.py", label="Projects", icon="🗃️")
+        st.page_link("pages/tenants.py", label="Companies", icon="🏬")
+        st.page_link("pages/project_open.py", label="Open project", icon="📂")
+        st.page_link("pages/project_chat.py", label="Chat", icon="💬")
+        st.caption("SETTINGS")
+        st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
+        st.divider()
+        st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
+        if st.button("Sign out", use_container_width=True, type="secondary", key=signout_key):
+            clear_auth_session()
+            st.switch_page("pages/signin.py")
+            st.stop()
 
 def _schema_active(h: dict) -> bool:
     return bool((h or {}).get("activated") and (h or {}).get("has_tables"))
@@ -1035,7 +1081,7 @@ def run() -> None:
     if not st.session_state.auth_user:
         st.switch_page("pages/signin.py")
         st.stop()
-    apply_shared_theme()
+    apply_dashboard_theme()
 
     # ── Session (per project / FastAPI session_id) ─────────────────────────────
     apply_project_workspace(ensure_tenant_state)
@@ -1125,13 +1171,6 @@ def run() -> None:
     if workbench_page() == "chat":
         with st.sidebar:
             st.subheader("Query options")
-            _auth = st.session_state.auth_user or {}
-            st.caption(f"Signed in as `{_auth.get('username', 'user')}`")
-            st.page_link("pages/dashboard.py", label="All projects", icon="🏠")
-            if st.button("🚪 Sign Out", use_container_width=True, key="signout_chat"):
-                st.session_state.auth_user = None
-                st.switch_page("pages/signin.py")
-                st.stop()
             st.divider()
             st.caption("Session — tables (top-K) and row preview")
             st.session_state.top_k = st.slider(
@@ -1969,8 +2008,11 @@ def run() -> None:
         st.info("Only the tables you activate are used for this session.")
         st.stop()
     else:
-        st.title("Chat")
-        st.caption("Ask in plain language. You’ll get an explanation, SQL, and your data.")
+        st.markdown('<div class="sqg-dash-title"><h1>Chat</h1></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="sqg-dash-sub">Ask in plain language and get explanation, SQL, and results.</p>',
+            unsafe_allow_html=True,
+        )
 
     # ── Chat main (only when schema is active; gated above) ───────────────────────
     if not _nl_session_ready():

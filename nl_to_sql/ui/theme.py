@@ -131,7 +131,14 @@ def apply_dashboard_theme() -> None:
         :root { --sqg-purple: #5b21b6; --sqg-purple-hover: #6d28d9; }
         [data-testid="stAppViewContainer"] .stApp { color: #0f172a !important; background: #f3f4f6 !important; }
         [data-testid="stAppViewBlockContainer"] { background: #f3f4f6 !important; padding: 0.5rem 1.5rem 1.5rem !important; box-sizing: border-box !important; }
-        [data-testid="stHeader"] { background: #dbeafe !important; }
+        /* Top bar: match sidebar shell */
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"] {
+            background: #f8fafc !important;
+            border-bottom: 1px solid #e2e8f0 !important;
+        }
+        [data-testid="stHeader"] [data-baseweb="button"] { color: #1e293b !important; }
         /* Vertically center the card when the page is short; long pages grow normally (margin auto) */
         section.main {
             background: #f3f4f6 !important;
@@ -308,6 +315,32 @@ def apply_dashboard_theme() -> None:
         .sqg-dmi-hint { color: #94a3b8; font-size: 0.8rem; margin: 0.25rem 0 0; }
         .sqg-dash-sec { font-size: 1.1rem; font-weight: 700; color: #0f172a; margin: 0.5rem 0 0.75rem; }
         p.sqg-dash-sec--row { margin: 0 !important; line-height: 1.2 !important; display: block !important; }
+        /* My projects — card body lines (Company, description, Status, Updated): dark labels */
+        p.sqg-dash-proj-line,
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] p.sqg-dash-proj-line {
+            color: #0f172a !important;
+            -webkit-text-fill-color: #0f172a !important;
+            font-size: 0.9rem !important;
+            line-height: 1.45 !important;
+            margin: 0.1rem 0 0.4rem 0 !important;
+        }
+        p.sqg-dash-proj-line code {
+            color: #0f172a !important;
+            -webkit-text-fill-color: #0f172a !important;
+            background: rgba(15, 23, 42, 0.07) !important;
+            padding: 0.12rem 0.4rem !important;
+            border-radius: 4px !important;
+            font-size: 0.88em !important;
+        }
+        p.sqg-dash-proj-line strong { color: #0f172a !important; }
+        /* Legacy: captions if any remain inside project card */
+        section.main .sqg-dash-proj [data-testid="stCaption"],
+        section.main .sqg-dash-proj [data-testid="stCaption"] p,
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] p:not(.sqg-dash-proj-line),
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] span { color: #0f172a !important; }
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] strong { color: #0f172a !important; }
+        section.main [data-baseweb="notification"] [data-testid="stMarkdownContainer"] p,
+        section.main [data-testid="stAlert"] [data-testid="stMarkdownContainer"] p { color: #0f172a !important; }
         .sqg-dash-myprow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin: 0.4rem 0 0.6rem; }
         .sqg-dash-tabpanel { min-height: 2rem; }
         .sqg-dash-empty {
@@ -326,9 +359,73 @@ def apply_dashboard_theme() -> None:
         .sqg-dash-proj {
             background: #dbeafe; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.9rem 1rem 0.5rem; margin: 0 0 0.6rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
         }
+        /* Project card action buttons: keep text visible always */
+        section.main .sqg-dash-proj [data-baseweb="button"],
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] {
+            background: #f8fafc !important;
+            border: 1px solid #cbd5e1 !important;
+            color: #0f172a !important;
+        }
+        section.main .sqg-dash-proj [data-baseweb="button"]:hover,
+        section.main .sqg-dash-proj [data-baseweb="button"]:focus,
+        section.main .sqg-dash-proj [data-baseweb="button"]:active,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"]:hover,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"]:focus,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"]:active {
+            background: #eef2f7 !important;
+            color: #0f172a !important;
+            border-color: #94a3b8 !important;
+        }
+        section.main .sqg-dash-proj [data-baseweb="button"] p,
+        section.main .sqg-dash-proj [data-baseweb="button"] span,
+        section.main .sqg-dash-proj [data-baseweb="button"] div,
+        section.main .sqg-dash-proj [data-baseweb="button"] label,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] p,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] span,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] div,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] label {
+            color: #0f172a !important;
+            opacity: 1 !important;
+        }
+        @media (max-width: 1024px) {
+            [data-testid="stAppViewBlockContainer"] {
+                padding: 0.35rem 0.85rem 1rem !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.55rem !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                min-width: 220px !important;
+                flex: 1 1 220px !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] [data-baseweb="select"],
+            section.main [data-testid="stHorizontalBlock"] [data-baseweb="button"],
+            section.main [data-testid="stHorizontalBlock"] [data-testid="stPageLink-Nav"] a {
+                width: 100% !important;
+            }
+        }
         @media (max-width: 768px) {
-            [data-testid="stAppViewBlockContainer"] { padding: 0.25rem 0.75rem 1rem !important; }
-            section.main { min-height: calc(100vh - 3.5rem) !important; }
+            [data-testid="stAppViewBlockContainer"] {
+                padding: 0.2rem 0.65rem 0.85rem !important;
+            }
+            section.main {
+                min-height: calc(100vh - 3.5rem) !important;
+                padding: 0.45rem 0 0.7rem 0 !important;
+            }
+            section.main > div.block-container {
+                padding: 0.85rem 0.8rem 1rem !important;
+                border-radius: 10px !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                min-width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+            .sqg-dash-title h1 { font-size: 1.35rem !important; }
+            .sqg-dash-sub { font-size: 0.86rem !important; }
+            .sqg-dmi-val { font-size: 1.2rem !important; }
+            .sqg-dash-proj { padding: 0.75rem 0.8rem 0.45rem !important; }
+            .sqg-dash-empty { min-height: 180px; padding: 1.2rem 1rem 1rem; }
         }
         </style>
         """,

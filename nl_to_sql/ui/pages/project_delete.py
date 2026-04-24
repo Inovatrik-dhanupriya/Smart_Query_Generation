@@ -15,13 +15,14 @@ from ensure_path import install
 install()
 
 from ui.theme import apply_shared_theme, render_page_header
+from ui.auth.session import restore_auth_session
 from ui.tenant.state import delete_project, ensure_tenant_state, selected_project
 
 st.set_page_config(page_title="Delete Project", page_icon="🗑️", layout="wide")
 apply_shared_theme()
 ensure_tenant_state()
 
-if not st.session_state.get("auth_user"):
+if not restore_auth_session():
     st.switch_page("pages/signin.py")
     st.stop()
 

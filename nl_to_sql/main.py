@@ -90,7 +90,12 @@ from sql_engine import (
     validate_sql,
     validate_sql_tables_against_schema,
 )
-from db import get_app_db_cursor, prepare_app_auth_backend
+from db import (
+    ensure_project_db_connections_table,
+    ensure_projects_table,
+    get_app_db_cursor,
+    prepare_app_auth_backend,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -132,6 +137,16 @@ def _schema_job_progress_cb(job_id: str):
                 j["phase"] = "remote_sync"
 
     return _cb
+
+
+def _provision_schema_http(
+    creds: PgCredentials, target: str, schema: dict[str, Any]
+) -> Any:
+    """Run DDL provisioning; map failures to HTTP 400 (kept in one place to avoid fragile try/except indentation)."""
+    try:
+        return provision_schema_to_database(creds, target, schema)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _schema_upload_core(
@@ -179,10 +194,7 @@ def _schema_upload_core(
                 if j:
                     j["phase"] = "provision"
                     j["message"] = "Creating database and DDL…"
-        try:
-            prov = provision_schema_to_database(creds, _target, schema)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        prov = _provision_schema_http(creds, _target, schema)
 
         close_pool(sid)
         new_creds = PgCredentials(
@@ -447,6 +459,8 @@ async def lifespan(app: FastAPI):
     # App auth DB (Userdetails + public.auth_users). Uses DB_ADMIN_* or DB_USER/DB_PASSWORD.
     try:
         prepare_app_auth_backend()
+        ensure_projects_table()
+        ensure_project_db_connections_table()
         log.info("Auth schema is ready in app-level database.")
     except Exception as e:
         log.warning("App database/auth setup failed: %s. Continuing.", e)
