@@ -59,7 +59,8 @@ _API_PORT = urlparse(API_URL).port or (443 if urlparse(API_URL).scheme == "https
 
 
 
-from ui.theme import apply_chat_page_theme, apply_shared_theme
+from ui.auth.session import clear_auth_session
+from ui.theme import apply_chat_page_theme, apply_dashboard_theme, apply_shared_theme
 from ui.tenant.project_context import apply_project_workspace, get_active_project_id
 from ui.tenant.state import (
     ensure_tenant_state,
@@ -133,7 +134,48 @@ def _persist_activated_schema_to_app() -> None:
         save_project_schema_cache(int(uid), str(pid), data)
     except Exception:
         pass
+def _render_workbench_sidebar_shell(signout_key: str) -> None:
+    _auth = st.session_state.auth_user or {}
+    _uname = str(_auth.get("username", "user") or "user")
+    _init = (html.escape(_uname[:1] or "?")).upper()
+    _display = html.escape(_uname)
 
+    with st.sidebar:
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem">
+              <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
+                <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
+                  <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
+                  <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
+                  <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
+                </span>
+              </span>
+              <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
+            </div>
+            <div class="sqg-sb-user">
+              <div class="sqg-sb-av">{_init}</div>
+              <div>
+                <div class="sqg-sb-name">{_display}</div>
+                <div class="sqg-sb-role">Member</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("WORKSPACE")
+        st.page_link("pages/dashboard.py", label="Projects", icon="🗃️")
+        st.page_link("pages/tenants.py", label="Companies", icon="🏬")
+        st.page_link("pages/project_open.py", label="Open project", icon="📂")
+        st.page_link("pages/project_chat.py", label="Chat", icon="💬")
+        st.caption("SETTINGS")
+        st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
+        st.divider()
+        st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
+        if st.button("Sign out", use_container_width=True, type="secondary", key=signout_key):
+            clear_auth_session()
+            st.switch_page("pages/signin.py")
+            st.stop()
 
 def _schema_active(h: dict) -> bool:
     return bool((h or {}).get("activated") and (h or {}).get("has_tables"))
@@ -2231,9 +2273,11 @@ def run() -> None:
     if not st.session_state.auth_user:
         st.switch_page("pages/signin.py")
         st.stop()
-    apply_shared_theme()
     if workbench_page() == "chat":
+        apply_shared_theme()
         apply_chat_page_theme()
+    else:
+        apply_dashboard_theme()
 
     # ── Session (per project / FastAPI session_id) ─────────────────────────────
     apply_project_workspace(ensure_tenant_state)
@@ -2338,6 +2382,12 @@ def run() -> None:
                 '<div class="sqg-chat-brand-line">NL → SQL</div>'
                 '<p class="sqg-chat-sub">natural language query</p>',
                 unsafe_allow_html=True,
+            )
+            st.subheader("Query options")
+            st.divider()
+            st.caption("Session — tables (top-K) and row preview")
+            st.session_state.top_k = st.slider(
+                "Tables to retrieve (top-K)", 1, 10, int(st.session_state.top_k or 3), key="ch_topk"
             )
             _p = find_project_by_id(get_active_project_id() or "")
             _pname = (_p or {}).get("name") or "—"

@@ -9,6 +9,7 @@ import uuid
 import streamlit as st
 
 from ui.auth.components import render_auth_layout, render_nav_link
+from ui.auth.session import set_auth_session
 from ui.auth.service import sign_in, sign_up
 from ui.auth.validators import validate_sign_in, validate_sign_up
 
@@ -78,12 +79,13 @@ def render_sign_in_page(
                 result = sign_in(username=username, password=password)
                 if result.get("ok"):
                     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-                    st.session_state[_AUTH_USER_KEY] = {
+                    auth_user = {
                         "user_id": data.get("user_id"),
                         "username": data.get("username", username),
                         "email": data.get("email"),
                         "company_name": data.get("company_name"),
                     }
+                    set_auth_session(auth_user, ttl_minutes=30)
                     if go_to_main:
                         go_to_main()
                         return
