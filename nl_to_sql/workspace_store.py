@@ -29,6 +29,47 @@ def ensure_backend() -> None:
     prep()
 
 
+def _schema_cache_metadata_only(src: Any) -> dict[str, Any]:
+    """
+    App DB may only store table/column/FK **metadata** — never result rows, samples,
+    or other payloads (defense in depth, even if callers use GET /schema only).
+    """
+    if not isinstance(src, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for t, meta in src.items():
+        if not isinstance(meta, dict):
+            continue
+        out[str(t)] = {
+            "columns": meta.get("columns") or [],
+            "foreign_keys": meta.get("foreign_keys") or [],
+        }
+    return out
+
+
+def save_project_schema_cache(user_id: int, project_id: str, schema: dict[str, Any]) -> None:
+    """
+    Store a copy of the activated table/column metadata in the
+    application database. Business **rows** are never written here; queries run
+    on the client connection pool, not in this DB.
+    """
+    import json
+
+    clean = _schema_cache_metadata_only(schema)
+    ensure_backend()
+    get_app_db_cursor, _ = _db()
+    with get_app_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.app_project_schema_cache (user_id, project_id, schema_json, updated_at)
+            VALUES (%s, %s, %s::jsonb, NOW())
+            ON CONFLICT (user_id, project_id) DO UPDATE
+            SET schema_json = EXCLUDED.schema_json, updated_at = NOW()
+            """,
+            (user_id, project_id, json.dumps(clean)),
+        )
+
+
 def _row_first(row: Any) -> Any:
     """Return first column value for dict/tuple DB rows."""
     if row is None:

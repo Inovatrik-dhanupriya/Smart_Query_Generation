@@ -42,6 +42,13 @@ from utils.config import (
     session_max_age_hours,
     session_max_turns,
 )
+
+try:
+    from utils.config import allow_data_ingestion_to_connected_db
+except ImportError:
+    def allow_data_ingestion_to_connected_db() -> bool:
+        v = (os.getenv("SMART_QUERY_ALLOW_DATA_INGESTION", "") or "").strip().lower()
+        return v in ("1", "true", "yes", "on")
 from embed_page import get_embed_html
 from utils.env import load_app_env, package_root
 
@@ -50,8 +57,10 @@ load_app_env()
 from db import (
     PgCredentials,
     close_pool,
+    close_pool_only,
     has_pool,
     register_pool,
+    start_ssh_pg_tunnel,
 )
 from llm import (
     expand_selected_tables_for_nl_query,
@@ -196,7 +205,7 @@ def _schema_upload_core(
                     j["message"] = "Creating database and DDL…"
         prov = _provision_schema_http(creds, _target, schema)
 
-        close_pool(sid)
+        close_pool_only(sid)
         new_creds = PgCredentials(
             host=creds.host,
             port=creds.port,
@@ -228,6 +237,17 @@ def _schema_upload_core(
         data_sync: dict[str, Any] | None = None
         _ru = (remote_data_url or "").strip()
         if _ru:
+            if not allow_data_ingestion_to_connected_db():
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Remote row load into PostgreSQL is disabled. "
+                        "The product stores only schema metadata in the app database and runs "
+                        "queries on your connected client DB. To enable the optional row-sync "
+                        "feature (not recommended for strict 'no data copy' policies), set "
+                        "SMART_QUERY_ALLOW_DATA_INGESTION=1 in the API environment."
+                    ),
+                )
             try:
                 rl = int((remote_row_limit or "5000").strip() or "5000")
             except ValueError:
@@ -899,13 +919,19 @@ class DbConnectBody(BaseModel):
     username: str
     password: str
     catalog_database: Optional[str] = None
+    # Optional: reach Postgres through an SSH bastion (key-based). If ssh_host is set, tunnel first.
+    ssh_host: Optional[str] = None
+    ssh_port: int = 22
+    ssh_username: Optional[str] = None
+    ssh_private_key: Optional[str] = None
+    ssh_private_key_passphrase: Optional[str] = None
 
     @field_validator("catalog_database", "username", "host")
     @classmethod
     def strip_s(cls, v: str | None) -> str | None:
         return v.strip() if isinstance(v, str) else v
 
-    @field_validator("port")
+    @field_validator("port", "ssh_port")
     @classmethod
     def port_ok(cls, v: int) -> int:
         if not (1 <= v <= 65535):
@@ -1214,17 +1240,41 @@ def db_connect(request: Request, body: DbConnectBody):
     Open a pooled read-only connection. ``catalog_database`` is the initial
     PostgreSQL database to attach to (to list other databases). If omitted,
     the server uses ``username`` as the database name (common PostgreSQL default).
+    When ``ssh_host`` + ``ssh_private_key`` are set, the API opens a local forward
+    to ``host:port`` (Postgres as seen from the SSH server) and connects via ``127.0.0.1``.
     """
     sid = body.session_id.strip()
+    close_pool(sid)
     initial_db = (body.catalog_database or body.username).strip()
     if not initial_db:
         raise HTTPException(
             status_code=400,
             detail="Missing catalog database or username.",
         )
+    h = (body.host or "").strip()
+    p = int(body.port)
+    use_ssh = bool((body.ssh_host or "").strip() and (body.ssh_private_key or "").strip())
+    if use_ssh:
+        try:
+            ch, cport = start_ssh_pg_tunnel(
+                sid,
+                db_host=h,
+                db_port=p,
+                ssh_host=(body.ssh_host or "").strip(),
+                ssh_port=int(body.ssh_port or 22),
+                ssh_username=(body.ssh_username or body.username or "").strip(),
+                ssh_private_key_pem=body.ssh_private_key or "",
+                ssh_private_key_passphrase=body.ssh_private_key_passphrase,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            log.warning("ssh tunnel failed: %s", e)
+            raise HTTPException(status_code=400, detail=f"SSH tunnel failed: {e}") from e
+        h, p = ch, cport
     creds = PgCredentials(
-        host=body.host,
-        port=body.port,
+        host=h,
+        port=p,
         user=body.username,
         password=body.password,
         database=initial_db,
@@ -1233,17 +1283,22 @@ def db_connect(request: Request, body: DbConnectBody):
         names = list_database_names(creds)
     except Exception as e:
         log.warning("db_connect failed: %s", e)
+        close_pool(sid)
         raise HTTPException(status_code=400, detail=f"Connection failed: {e}") from e
 
-    close_pool(sid)
+    close_pool_only(sid)
     register_pool(sid, creds, read_only=True)
     sess = _ensure_nl(sid)
     sess["credentials"] = creds
     sess["database"] = creds.database
+    sess["via_ssh"] = use_ssh
+    if use_ssh and body.ssh_host:
+        sess["ssh_bastion"] = (body.ssh_host or "").strip()
     return {
         "status": "connected",
         "database": creds.database,
         "databases": names,
+        "via_ssh": use_ssh,
     }
 
 
@@ -1267,7 +1322,7 @@ def db_use_database(request: Request, body: DbUseDatabaseBody):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cannot open database: {e}") from e
 
-    close_pool(sid)
+    close_pool_only(sid)
     register_pool(sid, creds, read_only=True)
     sess["credentials"] = creds
     sess["database"] = creds.database
@@ -1969,6 +2024,71 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
         tables_used = canonical_tables_referenced_in_sql(sql, schema) or selected_tables
 
     if not s.get("execution_enabled"):
+        # No PostgreSQL pool — data questions return empty. For meta questions we can
+        # still return rows from the loaded in-memory schema so the table grid is useful.
+        _lim = max(1, min(int(req.row_limit or 20), 5000))
+        _off = max(0, int(req.offset or 0))
+        _snap = (
+            " (No live DB — this is from the **uploaded/activated schema** in the API, "
+            "not from pgAdmin. Connect and **materialize** or use **Connect database → Activate** to run SQL on PostgreSQL.)"
+        )
+        if meta_schema_list:
+            _keys = sorted((schema or {}).get("tables") or ())
+            _page = _keys[_off : _off + _lim]
+            _rows = [{"table_key": k} for k in _page]
+            return QueryResponse(
+                sql=sql,
+                explanation=explanation + _snap,
+                chart_suggestion=chart_suggestion,
+                viz_config=viz_config,
+                columns=["table_key"],
+                rows=_rows,
+                row_count=len(_rows),
+                total_count=len(_keys),
+                has_more=(_off + len(_rows)) < len(_keys),
+                execution_ms=0,
+                tables_used=tables_used,
+                execution_skipped=True,
+            )
+        if meta_schema_count:
+            n_loaded = len((schema or {}).get("tables") or {})
+            return QueryResponse(
+                sql=sql,
+                explanation=explanation + _snap,
+                chart_suggestion=chart_suggestion,
+                viz_config=viz_config,
+                columns=["number_of_tables"],
+                rows=[{"number_of_tables": n_loaded}],
+                row_count=1,
+                total_count=1,
+                has_more=False,
+                execution_ms=0,
+                tables_used=tables_used,
+                execution_skipped=True,
+            )
+        if meta_tables_reply:
+            _m = llm_result.get("_meta_tables_used")
+            _nlist: list[str] = []
+            if isinstance(_m, list) and _m:
+                _nlist = [str(x) for x in _m if str(x).strip()]
+            if not _nlist:
+                _nlist = list(dict.fromkeys(selected_tables)) or ["(none resolved)"]
+            _page = _nlist[_off : _off + _lim]
+            _rows = [{"table_name": n} for n in _page]
+            return QueryResponse(
+                sql=sql,
+                explanation=explanation + _snap,
+                chart_suggestion=chart_suggestion,
+                viz_config=viz_config,
+                columns=["table_name"],
+                rows=_rows,
+                row_count=len(_rows),
+                total_count=len(_nlist),
+                has_more=(_off + len(_rows)) < len(_nlist),
+                execution_ms=0,
+                tables_used=tables_used,
+                execution_skipped=True,
+            )
         return QueryResponse(
             sql=sql,
             explanation=explanation + " (SQL not executed: no active database for this session.)",
@@ -2077,6 +2197,11 @@ def reload_schema(request: Request, body: ReloadBody):
 @app.post("/import-table")
 @limiter.limit("5/minute")
 def import_table_endpoint(req: ImportRequest, request: Request):
+    if not allow_data_ingestion_to_connected_db():
+        raise HTTPException(
+            status_code=403,
+            detail="Importing rows is disabled. Set SMART_QUERY_ALLOW_DATA_INGESTION=1 to opt in, or use Connect database + /generate-sql to query the client directly.",
+        )
     sid = req.session_id.strip()
     sess = _get_nl(sid)
     if not sess or not sess.get("credentials"):
@@ -2116,6 +2241,11 @@ def import_table_endpoint(req: ImportRequest, request: Request):
 @app.post("/sync-tables")
 @limiter.limit("30/minute")
 def sync_tables_endpoint(req: SyncRequest, request: Request):
+    if not allow_data_ingestion_to_connected_db():
+        raise HTTPException(
+            status_code=403,
+            detail="Table row sync is disabled. Set SMART_QUERY_ALLOW_DATA_INGESTION=1 to opt in, or use Connect database + /generate-sql to query the client directly.",
+        )
     sid = req.session_id.strip()
     sess = _get_nl(sid)
     if not sess or not sess.get("credentials"):

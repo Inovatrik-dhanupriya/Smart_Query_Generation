@@ -66,6 +66,12 @@ _SNAPSHOT_STABLE: tuple[str, ...] = (
     "ms_schemas",  # multiselect key for schemas
     "table_search_nl",
     "schema_json_upload_mode",
+    "conn_use_ssh",
+    "conn_ssh_host",
+    "conn_ssh_port",
+    "conn_ssh_user",
+    "conn_ssh_key",
+    "conn_ssh_key_pass",
 )
 
 _DEFAULT_ROW_LIMIT = 20
@@ -98,6 +104,12 @@ _DEFAULTS_FOR_NEW_PROJECT: dict[str, Any] = {
     "top_k": 3,
     "row_limit": _DEFAULT_ROW_LIMIT,
     "schema_job_paused": False,
+    "conn_use_ssh": False,
+    "conn_ssh_host": "",
+    "conn_ssh_port": "22",
+    "conn_ssh_user": "",
+    "conn_ssh_key": "",
+    "conn_ssh_key_pass": "",
 }
 
 
