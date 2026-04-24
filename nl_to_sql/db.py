@@ -9,6 +9,7 @@ import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg2
 import psycopg2.pool
@@ -124,6 +125,7 @@ def _connect_auth_runtime(dbname: str) -> psycopg2.extensions.connection:
         connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
     )
 _pools: dict[str, psycopg2.pool.ThreadedConnectionPool] = {}
+_ssh_tunnels: dict[str, Any] = {}
 _lock = threading.Lock()
 
 
@@ -136,12 +138,88 @@ class PgCredentials:
     database: str
 
 
+def start_ssh_pg_tunnel(
+    session_id: str,
+    *,
+    db_host: str,
+    db_port: int,
+    ssh_host: str,
+    ssh_port: int = 22,
+    ssh_username: str,
+    ssh_private_key_pem: str,
+    ssh_private_key_passphrase: str | None = None,
+) -> tuple[str, int]:
+    """
+    Open an SSH local forward to PostgreSQL. Returns ``(connect_host, connect_port)`` to
+    pass to :func:`register_pool` (typically ``127.0.0.1`` and a free local port).
+    ``db_host`` / ``db_port`` is where Postgres listens *from the SSH server* (e.g. ``localhost`` or a VPC IP).
+    """
+    from io import StringIO
+
+    import paramiko
+    from sshtunnel import SSHTunnelForwarder
+
+    _stop_ssh_tunnel(session_id)
+    pem = (ssh_private_key_pem or "").strip()
+    if not pem:
+        raise ValueError("SSH private key (PEM) is required for SSH mode.")
+
+    pkey: paramiko.pkey.PKey | None = None
+    for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
+        try:
+            pkey = key_cls.from_private_key(
+                StringIO(pem),
+                password=(ssh_private_key_passphrase or None) or None,
+            )
+            break
+        except Exception:
+            continue
+    if pkey is None:
+        raise ValueError("Could not load SSH private key. Paste a PEM (RSA, ECDSA, or Ed25519).")
+
+    ch = (db_host or "").strip()
+    cp = int(db_port)
+    if not (1 <= cp <= 65535):
+        raise ValueError("Invalid database port for SSH tunnel.")
+
+    tunnel = SSHTunnelForwarder(
+        (ssh_host.strip(), int(ssh_port)),
+        ssh_username=(ssh_username or "").strip(),
+        ssh_pkey=pkey,
+        remote_bind_address=(ch, cp),
+    )
+    tunnel.start()
+    lport = tunnel.local_bind_port
+    if lport is None:
+        try:
+            tunnel.stop()
+        except Exception:
+            pass
+        raise RuntimeError("SSH tunnel did not return a local port.")
+    if isinstance(lport, (list, tuple)):
+        lport = lport[0]
+    key = _pool_key(session_id)
+    with _lock:
+        _ssh_tunnels[key] = tunnel
+    return "127.0.0.1", int(lport)
+
+
 def _pool_key(session_id: str) -> str:
     return session_id.strip()
 
 
-def close_pool(session_id: str) -> None:
-    """Close and remove the pool for this session, if any."""
+def _stop_ssh_tunnel(session_id: str) -> None:
+    key = _pool_key(session_id)
+    t = _ssh_tunnels.pop(key, None)
+    if t is not None:
+        try:
+            t.stop()  # sshtunnel.SSHTunnelForwarder
+        except Exception as e:
+            log.warning("ssh tunnel stop(%s): %s", key[:8], e)
+
+
+def close_pool_only(session_id: str) -> None:
+    """Close only the client DB pool, keep SSH tunnel (if any) for the same session."""
     key = _pool_key(session_id)
     with _lock:
         pool = _pools.pop(key, None)
@@ -149,7 +227,13 @@ def close_pool(session_id: str) -> None:
         try:
             pool.closeall()
         except Exception as e:
-            log.warning("close_pool(%s): %s", key, e)
+            log.warning("close_pool_only(%s): %s", key, e)
+
+
+def close_pool(session_id: str) -> None:
+    """Close the client pool and any SSH tunnel for this session (full reset)."""
+    close_pool_only(session_id)
+    _stop_ssh_tunnel(session_id)
 
 
 def register_pool(session_id: str, creds: PgCredentials, *, read_only: bool = True) -> None:
@@ -324,6 +408,24 @@ def ensure_auth_tables() -> None:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS ix_app_ws_proj_user ON public.app_workspace_projects (user_id)"
             )
+            # Cached catalog of activated tables (from client DB introspection) for support / re-hydration
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.app_project_schema_cache (
+                    user_id BIGINT NOT NULL REFERENCES public.auth_users(id) ON DELETE CASCADE,
+                    project_id VARCHAR(64) NOT NULL,
+                    schema_json JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, project_id),
+                    CONSTRAINT fk_app_schema_proj
+                        FOREIGN KEY (user_id, project_id)
+                        REFERENCES public.app_workspace_projects (user_id, id) ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS ix_app_schema_cache_user ON public.app_project_schema_cache (user_id)"
+            )
             auth_user = os.getenv("AUTH_DB_USER", "").strip()
             auth_password = os.getenv("AUTH_DB_PASSWORD", "").strip()
             if bool(auth_user) != bool(auth_password):
@@ -363,7 +465,11 @@ def ensure_auth_tables() -> None:
                         pg_sql.Identifier(auth_user)
                     )
                 )
-                for _tbl in ("app_workspace_tenants", "app_workspace_projects"):
+                for _tbl in (
+                    "app_workspace_tenants",
+                    "app_workspace_projects",
+                    "app_project_schema_cache",
+                ):
                     cur.execute(
                         pg_sql.SQL(
                             "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.{} TO {}"

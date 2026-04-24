@@ -494,6 +494,64 @@ def _extract_sql_from_jsonish(raw: str) -> str:
     )
 
 
+def _quote_ident_part(name: str) -> str:
+    n = (name or "").strip().replace('"', '""')
+    return f'"{n}"'
+
+
+def _fallback_count_rows_sql(user_query: str, selected_tables: list[str], schema: dict) -> dict | None:
+    """
+    Deterministic fallback when model text is empty:
+    handle prompts like "How many rows are in apk?".
+    """
+    q = (user_query or "").strip().lower()
+    if not re.search(r"\bhow many\b", q) or "row" not in q:
+        return None
+
+    all_tables = list((schema.get("tables") or {}).keys())
+    if not all_tables:
+        return None
+
+    m = re.search(r"\b(?:in|from)\s+([a-zA-Z0-9_.]+)\??", q)
+    target_raw = (m.group(1) if m else "").strip().lower().strip(".")
+    if not target_raw:
+        return None
+
+    candidates = selected_tables or all_tables
+    by_key = {t.lower(): t for t in candidates}
+    by_short: dict[str, list[str]] = {}
+    for t in candidates:
+        short = t.lower().split(".")[-1]
+        by_short.setdefault(short, []).append(t)
+
+    chosen = by_key.get(target_raw)
+    if not chosen:
+        short_hits = by_short.get(target_raw, [])
+        if len(short_hits) == 1:
+            chosen = short_hits[0]
+    if not chosen:
+        for t in candidates:
+            tl = t.lower()
+            if target_raw in tl or tl.endswith("." + target_raw):
+                chosen = t
+                break
+    if not chosen:
+        return None
+
+    if "." in chosen:
+        sch, tbl = chosen.split(".", 1)
+        from_sql = f"{_quote_ident_part(sch)}.{_quote_ident_part(tbl)}"
+    else:
+        from_sql = _quote_ident_part(chosen)
+
+    return {
+        "sql": f"SELECT COUNT(*) AS row_count FROM {from_sql} AS t",
+        "explanation": f"Count total rows in `{chosen}`.",
+        "chart_suggestion": "kpi",
+        "viz_config": {"x": None, "y": "row_count", "color": None, "title": "Row count"},
+    }
+
+
 def _dedupe_prompt_list(prompts: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -773,9 +831,14 @@ Generate the SQL query now."""
     raw = json_slice_from_text(raw)
 
     if not raw:
+        fb = _fallback_count_rows_sql(user_query, selected_tables, schema)
+        if fb is not None:
+            _log.warning("LLM empty response; using deterministic count fallback.")
+            return fb
         raise ValueError(
-            "The model returned an empty response (possible safety block or API issue). "
-            "Try a shorter question or retry."
+            "I could not generate SQL for this request right now. "
+            "Please rephrase with clear table/metric terms and try again (for example: "
+            "'Show top 20 sales by store for last month')."
         )
 
     try:
