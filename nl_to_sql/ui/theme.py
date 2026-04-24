@@ -131,7 +131,14 @@ def apply_dashboard_theme() -> None:
         :root { --sqg-purple: #5b21b6; --sqg-purple-hover: #6d28d9; }
         [data-testid="stAppViewContainer"] .stApp { color: #0f172a !important; background: #f3f4f6 !important; }
         [data-testid="stAppViewBlockContainer"] { background: #f3f4f6 !important; padding: 0.5rem 1.5rem 1.5rem !important; box-sizing: border-box !important; }
-        [data-testid="stHeader"] { background: #dbeafe !important; }
+        /* Top bar: match sidebar shell */
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"] {
+            background: #f8fafc !important;
+            border-bottom: 1px solid #e2e8f0 !important;
+        }
+        [data-testid="stHeader"] [data-baseweb="button"] { color: #1e293b !important; }
         /* Vertically center the card when the page is short; long pages grow normally (margin auto) */
         section.main {
             background: #f3f4f6 !important;
@@ -178,27 +185,7 @@ def apply_dashboard_theme() -> None:
         section.main button[kind="primary"] {
             background: var(--sqg-purple) !important; border-color: #4c1d95 !important; color: #dbeafe !important;
         }
-<<<<<<< HEAD
-        section.main button[kind="primary"] p, section.main button[kind="primary"] span { color: #ffffff !important; }
-        section.main button[kind="secondary"] p,
-        section.main button[kind="secondary"] span,
-        section.main button[kind="secondary"] div,
-        section.main button[kind="secondary"] label {
-            color: #0f172a !important;
-        }
-        section.main [data-baseweb="button"][kind="primary"] p,
-        section.main [data-baseweb="button"][kind="primary"] span,
-        section.main [data-baseweb="button"][kind="primary"] div,
-        section.main [data-baseweb="button"][kind="primary"] label,
-        section.main button[kind="primary"] p,
-        section.main button[kind="primary"] span,
-        section.main button[kind="primary"] div,
-        section.main button[kind="primary"] label {
-            color: #ffffff !important;
-        }
-=======
         section.main button[kind="primary"] p, section.main button[kind="primary"] span { color: #dbeafe !important; }
->>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
         /* Toolbar + metric rows: one baseline / vertical center in each cell */
         section.main [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] { width: 100% !important; }
         section.main [data-testid="stHorizontalBlock"] { align-items: center !important; }
@@ -328,6 +315,32 @@ def apply_dashboard_theme() -> None:
         .sqg-dmi-hint { color: #94a3b8; font-size: 0.8rem; margin: 0.25rem 0 0; }
         .sqg-dash-sec { font-size: 1.1rem; font-weight: 700; color: #0f172a; margin: 0.5rem 0 0.75rem; }
         p.sqg-dash-sec--row { margin: 0 !important; line-height: 1.2 !important; display: block !important; }
+        /* My projects — card body lines (Company, description, Status, Updated): dark labels */
+        p.sqg-dash-proj-line,
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] p.sqg-dash-proj-line {
+            color: #0f172a !important;
+            -webkit-text-fill-color: #0f172a !important;
+            font-size: 0.9rem !important;
+            line-height: 1.45 !important;
+            margin: 0.1rem 0 0.4rem 0 !important;
+        }
+        p.sqg-dash-proj-line code {
+            color: #0f172a !important;
+            -webkit-text-fill-color: #0f172a !important;
+            background: rgba(15, 23, 42, 0.07) !important;
+            padding: 0.12rem 0.4rem !important;
+            border-radius: 4px !important;
+            font-size: 0.88em !important;
+        }
+        p.sqg-dash-proj-line strong { color: #0f172a !important; }
+        /* Legacy: captions if any remain inside project card */
+        section.main .sqg-dash-proj [data-testid="stCaption"],
+        section.main .sqg-dash-proj [data-testid="stCaption"] p,
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] p:not(.sqg-dash-proj-line),
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] span { color: #0f172a !important; }
+        section.main .sqg-dash-proj [data-testid="stMarkdownContainer"] strong { color: #0f172a !important; }
+        section.main [data-baseweb="notification"] [data-testid="stMarkdownContainer"] p,
+        section.main [data-testid="stAlert"] [data-testid="stMarkdownContainer"] p { color: #0f172a !important; }
         .sqg-dash-myprow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin: 0.4rem 0 0.6rem; }
         .sqg-dash-tabpanel { min-height: 2rem; }
         .sqg-dash-empty {

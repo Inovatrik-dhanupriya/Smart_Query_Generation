@@ -385,7 +385,7 @@ def ensure_projects_table() -> None:
     Each project belongs to an auth user via ``user_id -> auth_users(id)``.
     """
     target_db = _app_db_name()
-    conn = _connect_admin(target_db)
+    conn = _connect_bootstrap(target_db)
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
@@ -425,7 +425,7 @@ def ensure_project_db_connections_table() -> None:
     One project maps to one DB connection (UNIQUE project_id).
     """
     target_db = _app_db_name()
-    conn = _connect_admin(target_db)
+    conn = _connect_bootstrap(target_db)
     try:
         conn.autocommit = False
         with conn.cursor() as cur:

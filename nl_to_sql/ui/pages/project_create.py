@@ -59,7 +59,6 @@ with st.sidebar:
     st.caption("WORKSPACE")
     st.page_link("pages/dashboard.py", label="Projects", icon="🗃️", help=None)
     st.page_link("pages/tenants.py", label="Companies", icon="🏬", help=None)
-    st.page_link("pages/project_create.py", label="Databases", icon="🗄️", help=None)
     st.page_link("pages/project_open.py", label="Open project", icon="📂", help=None)
     st.page_link("pages/project_chat.py", label="Chat", icon="💬", help=None)
     st.caption("SETTINGS")

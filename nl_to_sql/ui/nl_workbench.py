@@ -100,7 +100,6 @@ def _render_workbench_sidebar_shell(signout_key: str) -> None:
         st.caption("WORKSPACE")
         st.page_link("pages/dashboard.py", label="Projects", icon="🗃️")
         st.page_link("pages/tenants.py", label="Companies", icon="🏬")
-        st.page_link("pages/project_create.py", label="Databases", icon="🗄️")
         st.page_link("pages/project_open.py", label="Open project", icon="📂")
         st.page_link("pages/project_chat.py", label="Chat", icon="💬")
         st.caption("SETTINGS")
@@ -1165,29 +1164,9 @@ def run() -> None:
 
     # ── Block Chat until Configuration has an activated schema ───────────────────
     if workbench_page() == "chat" and not _nl_session_ready():
-<<<<<<< HEAD
-        _render_workbench_sidebar_shell(signout_key="signout_gated")
-        with st.sidebar:
-            st.info("Open **Configuration** and activate a schema before using Chat.")
-            if st.button("Open Configuration", type="primary", use_container_width=True, key="sb_gate_m1"):
-                st.switch_page("pages/project_configuration.py")
-            st.divider()
-        st.markdown('<div class="sqg-dash-title"><h1>Chat</h1></div>', unsafe_allow_html=True)
-        st.markdown('<p class="sqg-dash-sub">Finish your data setup first.</p>', unsafe_allow_html=True)
-        st.error("Chat is locked: activate a schema in Configuration first.")
-        if st.button("Go to Configuration", type="primary", key="main_gate_m1", use_container_width=True):
-            st.switch_page("pages/project_configuration.py")
-        st.stop()
-
-    _render_workbench_sidebar_shell(
-        signout_key="signout_cfg" if workbench_page() == "configuration" else "signout_chat"
-    )
-
-=======
         _render_chat_locked_ui()
         st.stop()
 
->>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
     # ── Sidebar: chat tuning (Chat page only) ─────────────────────────────────
     if workbench_page() == "chat":
         with st.sidebar:
@@ -1240,8 +1219,6 @@ def run() -> None:
                         st.error(str(ex))
                 st.rerun()
 
-<<<<<<< HEAD
-=======
     # ── Sidebar: workspace nav (chat page; config has dedicated sidebar layout) ─
     if workbench_page() != "configuration":
         with st.sidebar:
@@ -1261,7 +1238,6 @@ def run() -> None:
             st.page_link("pages/project_chat.py", label="Chat", icon="💬")
             st.divider()
     
->>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
     # ── Sidebar: database & schema (Configuration page only) ────────────────────
     if workbench_page() == "configuration":
         _apply_configuration_ui_redesign_styles()
@@ -1964,13 +1940,6 @@ def run() -> None:
     
     # ── Main area ─────────────────────────────────────────────────────────────────
     if workbench_page() == "configuration":
-<<<<<<< HEAD
-        st.markdown('<div class="sqg-dash-title"><h1>Configuration</h1></div>', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="sqg-dash-sub">Connect your database (or upload schema), choose tables, then activate before opening Chat.</p>',
-            unsafe_allow_html=True,
-        )
-=======
         _cfg_user = (st.session_state.auth_user or {}).get("username", "admin")
         _cfg_initial = (_cfg_user[:1] if isinstance(_cfg_user, str) and _cfg_user else "U").upper()
         _cfg_l, _cfg_r = st.columns([7.0, 2.0], gap="small")
@@ -2005,7 +1974,6 @@ def run() -> None:
             _poll_schema_upload_job_fragment()
             st.divider()
 
->>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
         if st.session_state.get("show_chat_invite"):
 
             @st.dialog("Your schema is ready")
@@ -2025,20 +1993,7 @@ def run() -> None:
                         st.rerun()
 
             _invite_chat_dialog()
-<<<<<<< HEAD
-        st.markdown(
-            """
-<div class="sqg-dash-info" role="note">
-  <div class="sqg-dash-info-ico">⚙️</div>
-  <div><strong>How to configure</strong> — use the sidebar to connect PostgreSQL (or upload JSON), choose database/schemas/tables,
-  then <span class="sqg-info-kw">activate</span>. After activation, open <span class="sqg-info-kw">Chat</span>.</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-=======
         _render_configuration_getting_started()
->>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
         if st.session_state.pop("schema_chat_nav_blocked", False):
             st.warning("Chat is unavailable while the schema job is still running.")
         _sync_blocking_chat = _schema_activation_running_without_pause()

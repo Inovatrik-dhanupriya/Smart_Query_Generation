@@ -139,6 +139,16 @@ def _schema_job_progress_cb(job_id: str):
     return _cb
 
 
+def _provision_schema_http(
+    creds: PgCredentials, target: str, schema: dict[str, Any]
+) -> Any:
+    """Run DDL provisioning; map failures to HTTP 400 (kept in one place to avoid fragile try/except indentation)."""
+    try:
+        return provision_schema_to_database(creds, target, schema)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 def _schema_upload_core(
     job_id: str | None,
     sid: str,
@@ -184,10 +194,7 @@ def _schema_upload_core(
                 if j:
                     j["phase"] = "provision"
                     j["message"] = "Creating database and DDL…"
-        try:
-            prov = provision_schema_to_database(creds, _target, schema)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        prov = _provision_schema_http(creds, _target, schema)
 
         close_pool(sid)
         new_creds = PgCredentials(
