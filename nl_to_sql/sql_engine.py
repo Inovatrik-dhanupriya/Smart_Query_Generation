@@ -305,13 +305,19 @@ def canonical_tables_referenced_in_sql(sql: str, schema: dict) -> list[str]:
 # ── LIMIT / OFFSET helpers ────────────────────────────────────────────────────
 
 _LIMIT_RE  = re.compile(r"\bLIMIT\s+(\d+)\b",  re.IGNORECASE)
-_OFFSET_RE = re.compile(r"\bOFFSET\s+\d+\b",   re.IGNORECASE)
+_OFFSET_RE = re.compile(r"\bOFFSET\s+(\d+)\b", re.IGNORECASE)
 
 
 def _extract_limit(sql: str) -> int | None:
     """Return the integer in LIMIT N, or None if not present."""
     m = _LIMIT_RE.search(sql)
     return int(m.group(1)) if m else None
+
+
+def _extract_offset(sql: str) -> int:
+    """Return integer in OFFSET N, or 0 when missing."""
+    m = _OFFSET_RE.search(sql)
+    return int(m.group(1)) if m else 0
 
 
 def _strip_limit_offset(sql: str) -> str:
@@ -362,9 +368,9 @@ def execute_sql(sql: str, session_id: str) -> dict:
     Chat-UI execution with result caching.
 
     - Identical queries (same SQL text) return cached results (SQL_CACHE_TTL).
-    - If the SQL already contains LIMIT (… OFFSET …), it is executed as-is (after
-      validation) so the UI does not treat it like an unbounded scan. total_count
-      is then the size of that result (len(rows)), not COUNT(*) of the whole table.
+    - If the SQL already contains LIMIT (… OFFSET …), execute that SQL as-is for the
+      current page, but still compute ``total_count`` on the base query (without
+      LIMIT/OFFSET) so the UI can paginate consistently.
     - If there is no LIMIT, caps at SQL_PREVIEW_LIMIT and total_count = full row count
       of the inner query (for pagination / charts).
     """
@@ -388,12 +394,15 @@ def execute_sql(sql: str, session_id: str) -> dict:
             )
         columns, rows, elapsed_ms = _run_query(session_id, sql)
         n = len(rows)
+        base_sql = _strip_limit_offset(sql)
+        total = _count_query(session_id, base_sql)
+        off = _extract_offset(sql)
         result = {
             "columns":      columns,
             "rows":         rows,
             "row_count":    n,
-            "total_count":  n,
-            "has_more":     False,
+            "total_count":  total,
+            "has_more":     (off + n) < total,
             "execution_ms": elapsed_ms,
             "cached":       False,
         }

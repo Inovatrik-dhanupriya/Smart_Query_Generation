@@ -2010,6 +2010,71 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
         tables_used = canonical_tables_referenced_in_sql(sql, schema) or selected_tables
 
     if not s.get("execution_enabled"):
+        # No PostgreSQL pool — data questions return empty. For meta questions we can
+        # still return rows from the loaded in-memory schema so the table grid is useful.
+        _lim = max(1, min(int(req.row_limit or 20), 5000))
+        _off = max(0, int(req.offset or 0))
+        _snap = (
+            " (No live DB — this is from the **uploaded/activated schema** in the API, "
+            "not from pgAdmin. Connect and **materialize** or use **Connect database → Activate** to run SQL on PostgreSQL.)"
+        )
+        if meta_schema_list:
+            _keys = sorted((schema or {}).get("tables") or ())
+            _page = _keys[_off : _off + _lim]
+            _rows = [{"table_key": k} for k in _page]
+            return QueryResponse(
+                sql=sql,
+                explanation=explanation + _snap,
+                chart_suggestion=chart_suggestion,
+                viz_config=viz_config,
+                columns=["table_key"],
+                rows=_rows,
+                row_count=len(_rows),
+                total_count=len(_keys),
+                has_more=(_off + len(_rows)) < len(_keys),
+                execution_ms=0,
+                tables_used=tables_used,
+                execution_skipped=True,
+            )
+        if meta_schema_count:
+            n_loaded = len((schema or {}).get("tables") or {})
+            return QueryResponse(
+                sql=sql,
+                explanation=explanation + _snap,
+                chart_suggestion=chart_suggestion,
+                viz_config=viz_config,
+                columns=["number_of_tables"],
+                rows=[{"number_of_tables": n_loaded}],
+                row_count=1,
+                total_count=1,
+                has_more=False,
+                execution_ms=0,
+                tables_used=tables_used,
+                execution_skipped=True,
+            )
+        if meta_tables_reply:
+            _m = llm_result.get("_meta_tables_used")
+            _nlist: list[str] = []
+            if isinstance(_m, list) and _m:
+                _nlist = [str(x) for x in _m if str(x).strip()]
+            if not _nlist:
+                _nlist = list(dict.fromkeys(selected_tables)) or ["(none resolved)"]
+            _page = _nlist[_off : _off + _lim]
+            _rows = [{"table_name": n} for n in _page]
+            return QueryResponse(
+                sql=sql,
+                explanation=explanation + _snap,
+                chart_suggestion=chart_suggestion,
+                viz_config=viz_config,
+                columns=["table_name"],
+                rows=_rows,
+                row_count=len(_rows),
+                total_count=len(_nlist),
+                has_more=(_off + len(_rows)) < len(_nlist),
+                execution_ms=0,
+                tables_used=tables_used,
+                execution_skipped=True,
+            )
         return QueryResponse(
             sql=sql,
             explanation=explanation + " (SQL not executed: no active database for this session.)",
