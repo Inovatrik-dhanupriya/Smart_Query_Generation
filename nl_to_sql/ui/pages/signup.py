@@ -19,6 +19,7 @@ from ensure_path import install
 install()
 
 from ui.auth.pages import render_sign_up_page
+from ui.auth.session import restore_auth_session
 
 st.set_page_config(
     page_title="Create account",
@@ -36,7 +37,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if st.session_state.get("auth_user"):
+if restore_auth_session():
     st.switch_page("pages/dashboard.py")
 
 

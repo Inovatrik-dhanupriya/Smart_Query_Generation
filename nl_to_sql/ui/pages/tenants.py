@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import sys
 from pathlib import Path
 
@@ -14,39 +15,118 @@ from ensure_path import install
 
 install()
 
-from ui.theme import apply_shared_theme, render_page_header
+from ui.auth.session import clear_auth_session, restore_auth_session
+from ui.theme import apply_dashboard_theme
 from ui.tenant.state import (
-    DEFAULT_TENANT_ID,
     create_tenant,
-    delete_tenant,
     ensure_tenant_state,
-    get_tenant_by_id,
-    tenants,
 )
 
 st.set_page_config(page_title="Companies", page_icon="🏬", layout="wide")
-apply_shared_theme()
+apply_dashboard_theme()
 ensure_tenant_state()
 
-if not st.session_state.get("auth_user"):
+# Tenants page readability override: force white text on dark surface.
+st.markdown(
+    """
+    <style>
+    section.main,
+    section.main p,
+    section.main span,
+    section.main label,
+    section.main li,
+    section.main [data-testid="stMarkdownContainer"],
+    section.main [data-testid="stMarkdownContainer"] p,
+    section.main [data-testid="stCaption"],
+    section.main [data-baseweb="button"] *,
+    section.main button * {
+        color: #ffffff !important;
+    }
+    section.main [data-baseweb="input"] input,
+    section.main [data-baseweb="input"] textarea {
+        color: #000000 !important;
+        -webkit-text-fill-color: #000000 !important;
+        caret-color: #000000 !important;
+    }
+    section.main [data-baseweb="button"][kind="secondary"],
+    section.main [data-testid="stBaseButton-secondary"],
+    section.main [data-baseweb="button"][kind="primary"],
+    section.main [data-testid="stBaseButton-primary"] {
+        color: #ffffff !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+if not restore_auth_session():
     st.switch_page("pages/signin.py")
     st.stop()
 
+_auth = st.session_state.get("auth_user") or {}
+_uname = str(_auth.get("username", "user") or "user")
+_init = (html.escape(_uname[:1] or "?")).upper()
+_display = html.escape(_uname)
+_role = "Member"
+
 with st.sidebar:
-    st.page_link("pages/dashboard.py", label="Dashboard", icon="🏠")
+    st.markdown(
+        f"""
+        <div class="sqg-sb-head">
+          <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
+            <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
+              <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
+              <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
+              <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
+            </span>
+          </span>
+          <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
+        </div>
+        <div class="sqg-sb-user">
+          <div class="sqg-sb-av">{_init}</div>
+          <div>
+            <div class="sqg-sb-name">{_display}</div>
+            <div class="sqg-sb-role">{_role}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("WORKSPACE")
+    st.page_link("pages/dashboard.py", label="Projects", icon="🗃️", help=None)
+    st.page_link("pages/tenants.py", label="Companies", icon="🏬", help=None)
+    st.page_link("pages/project_create.py", label="Databases", icon="🗄️", help=None)
+    st.page_link("pages/project_open.py", label="Open project", icon="📂", help=None)
+    st.page_link("pages/project_chat.py", label="Chat", icon="💬", help=None)
+    st.caption("SETTINGS")
+    st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧", help=None)
+    st.divider()
+    st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
+    if st.button("Sign out", use_container_width=True, type="secondary", key="tenants_sign_out"):
+        clear_auth_session()
+        st.switch_page("pages/signin.py")
+        st.stop()
 
-render_page_header(
-    "Companies",
-    "Add organizations you work with. Each project belongs to one company so data and access stay separate.",
+st.markdown('<div class="sqg-dash-title"><h1>Companies</h1></div>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="sqg-dash-sub">Manage organizations for your projects. Each project stays scoped to one company.</p>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    """
+    <div class="sqg-dash-info" role="note">
+      <div class="sqg-dash-info-ico">ℹ️</div>
+      <div>Use companies to keep project organization clean. On the Projects page, filter workspaces by company.</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-st.info(
-    "On the main screen, filter projects by company. You’ll still sign in with **your** one account."
-)
-
+st.markdown("<div class='sqg-dash-proj'>", unsafe_allow_html=True)
 with st.form("new_tenant"):
     t_name = st.text_input("Company name", placeholder="e.g. Acme Corp")
-    add = st.form_submit_button("Add company", use_container_width=True)
+    add = st.form_submit_button("Add company", use_container_width=True, type="primary")
+st.markdown("</div>", unsafe_allow_html=True)
 
 if add:
     if not (t_name or "").strip():
@@ -57,20 +137,4 @@ if add:
             st.error(st.session_state.get("workspace_db_error") or "Could not save to the database.")
         else:
             st.success("Company added.")
-            st.rerun()
-
-st.divider()
-st.subheader("Existing companies")
-
-for t in tenants():
-    if not isinstance(t, dict):
-        continue
-    with st.container():
-        st.markdown(f"**{t.get('name', '—')}** · `{t.get('id', '')}`")
-        if t.get("id") != DEFAULT_TENANT_ID:
-            if st.button("Delete", key=f"del_{t.get('id')}", type="secondary"):
-                if delete_tenant(t.get("id") or ""):
-                    st.rerun()
-                else:
-                    st.warning("Cannot delete: remove or move projects that use this company first, or it is the default company.")
-        st.divider()
+            st.switch_page("pages/dashboard.py")

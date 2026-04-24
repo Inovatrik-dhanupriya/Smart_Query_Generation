@@ -23,11 +23,8 @@ def _filter_projects(my_projects: list[dict], mode: str) -> list[dict]:
     if m == "active":
         return [p for p in my_projects if (p.get("status") or "").lower() == "active"]
     if m == "archived":
-        return [
-            p
-            for p in my_projects
-            if (p.get("status") or "").lower() in ("archived", "closed", "inactive")
-        ]
+        _end = frozenset({"archived", "completed", "closed", "inactive"})
+        return [p for p in my_projects if (p.get("status") or "").lower() in _end]
     return my_projects
 
 
@@ -53,8 +50,6 @@ def _render_project_row(project: dict, idx: int) -> None:
     _t = get_tenant_by_id(project.get("tenant_id") or "") or {}
     if _t.get("name"):
         st.caption(f"Company: **`{_t.get('name')}`**")
-    if (project.get("client_code") or "").strip():
-        st.caption(f"Label: `{project['client_code'].strip()}`")
     st.caption(project.get("description") or "—")
     meta_a, meta_b = st.columns(2)
     meta_a.caption(f"Status: `{project.get('status', '—')}`")

@@ -14,7 +14,21 @@ ACTIVITY_KEY = "tenant_recent_activity"
 SELECTED_PROJECT_ID_KEY = "tenant_selected_project_id"
 DEFAULT_TENANT_ID = "ten-default"
 
+# Project lifecycle: Draft → Active → Archived (retired without deleting; NL→SQL workspace).
+PROJECT_STATUS_OPTIONS: tuple[str, ...] = ("Draft", "Active", "Archived")
+
 log = logging.getLogger(__name__)
+
+
+def project_status_select_index(current: str | None) -> int:
+    """Streamlit selectbox index for ``PROJECT_STATUS_OPTIONS``; legacy values map to Archived."""
+    cur = (current or "Draft").strip().lower()
+    for i, s in enumerate(PROJECT_STATUS_OPTIONS):
+        if s.lower() == cur:
+            return i
+    if cur in ("completed", "closed", "inactive"):
+        return PROJECT_STATUS_OPTIONS.index("Archived")
+    return 0
 
 
 def _default_nl_session() -> str:

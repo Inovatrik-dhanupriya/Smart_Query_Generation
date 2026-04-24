@@ -18,16 +18,14 @@ from ensure_path import install
 
 install()
 
+from ui.auth.session import clear_auth_session, restore_auth_session
 from ui.tenant.dashboard import render_tenant_dashboard
 from ui.theme import apply_dashboard_theme
 
 st.set_page_config(page_title="Projects", page_icon="📁", layout="wide")
 apply_dashboard_theme()
 
-if "auth_user" not in st.session_state:
-    st.session_state.auth_user = None
-
-if not st.session_state.auth_user:
+if not restore_auth_session():
     st.switch_page("pages/signin.py")
     st.stop()
 
@@ -71,7 +69,7 @@ with st.sidebar:
     st.divider()
     st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
     if st.button("Sign out", use_container_width=True, type="secondary", key="dash_sign_out"):
-        st.session_state.auth_user = None
+        clear_auth_session()
         st.switch_page("pages/signin.py")
         st.stop()
 

@@ -21,16 +21,14 @@ install()
 
 import streamlit as st
 
+from ui.auth.session import restore_auth_session
 from utils.env import load_app_env
 
 load_app_env()
 
 st.set_page_config(page_title="NL → SQL", page_icon="🔍", layout="wide")
 
-if "auth_user" not in st.session_state:
-    st.session_state.auth_user = None
-
-if not st.session_state.auth_user:
+if not restore_auth_session():
     st.switch_page("pages/signin.py")
     st.stop()
 

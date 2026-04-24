@@ -139,6 +139,22 @@ def apply_dashboard_theme() -> None:
             background: var(--sqg-purple) !important; border-color: #4c1d95 !important; color: #ffffff !important;
         }
         section.main button[kind="primary"] p, section.main button[kind="primary"] span { color: #ffffff !important; }
+        section.main button[kind="secondary"] p,
+        section.main button[kind="secondary"] span,
+        section.main button[kind="secondary"] div,
+        section.main button[kind="secondary"] label {
+            color: #0f172a !important;
+        }
+        section.main [data-baseweb="button"][kind="primary"] p,
+        section.main [data-baseweb="button"][kind="primary"] span,
+        section.main [data-baseweb="button"][kind="primary"] div,
+        section.main [data-baseweb="button"][kind="primary"] label,
+        section.main button[kind="primary"] p,
+        section.main button[kind="primary"] span,
+        section.main button[kind="primary"] div,
+        section.main button[kind="primary"] label {
+            color: #ffffff !important;
+        }
         /* Toolbar + metric rows: one baseline / vertical center in each cell */
         section.main [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] { width: 100% !important; }
         section.main [data-testid="stHorizontalBlock"] { align-items: center !important; }
@@ -286,9 +302,73 @@ def apply_dashboard_theme() -> None:
         .sqg-dash-proj {
             background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.9rem 1rem 0.5rem; margin: 0 0 0.6rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
         }
+        /* Project card action buttons: keep text visible always */
+        section.main .sqg-dash-proj [data-baseweb="button"],
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] {
+            background: #f8fafc !important;
+            border: 1px solid #cbd5e1 !important;
+            color: #0f172a !important;
+        }
+        section.main .sqg-dash-proj [data-baseweb="button"]:hover,
+        section.main .sqg-dash-proj [data-baseweb="button"]:focus,
+        section.main .sqg-dash-proj [data-baseweb="button"]:active,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"]:hover,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"]:focus,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"]:active {
+            background: #eef2f7 !important;
+            color: #0f172a !important;
+            border-color: #94a3b8 !important;
+        }
+        section.main .sqg-dash-proj [data-baseweb="button"] p,
+        section.main .sqg-dash-proj [data-baseweb="button"] span,
+        section.main .sqg-dash-proj [data-baseweb="button"] div,
+        section.main .sqg-dash-proj [data-baseweb="button"] label,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] p,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] span,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] div,
+        section.main .sqg-dash-proj [data-testid^="stBaseButton"] label {
+            color: #0f172a !important;
+            opacity: 1 !important;
+        }
+        @media (max-width: 1024px) {
+            [data-testid="stAppViewBlockContainer"] {
+                padding: 0.35rem 0.85rem 1rem !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.55rem !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                min-width: 220px !important;
+                flex: 1 1 220px !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] [data-baseweb="select"],
+            section.main [data-testid="stHorizontalBlock"] [data-baseweb="button"],
+            section.main [data-testid="stHorizontalBlock"] [data-testid="stPageLink-Nav"] a {
+                width: 100% !important;
+            }
+        }
         @media (max-width: 768px) {
-            [data-testid="stAppViewBlockContainer"] { padding: 0.25rem 0.75rem 1rem !important; }
-            section.main { min-height: calc(100vh - 3.5rem) !important; }
+            [data-testid="stAppViewBlockContainer"] {
+                padding: 0.2rem 0.65rem 0.85rem !important;
+            }
+            section.main {
+                min-height: calc(100vh - 3.5rem) !important;
+                padding: 0.45rem 0 0.7rem 0 !important;
+            }
+            section.main > div.block-container {
+                padding: 0.85rem 0.8rem 1rem !important;
+                border-radius: 10px !important;
+            }
+            section.main [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                min-width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+            .sqg-dash-title h1 { font-size: 1.35rem !important; }
+            .sqg-dash-sub { font-size: 0.86rem !important; }
+            .sqg-dmi-val { font-size: 1.2rem !important; }
+            .sqg-dash-proj { padding: 0.75rem 0.8rem 0.45rem !important; }
+            .sqg-dash-empty { min-height: 180px; padding: 1.2rem 1rem 1rem; }
         }
         </style>
         """,
