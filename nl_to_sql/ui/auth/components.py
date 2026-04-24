@@ -128,6 +128,17 @@ def render_auth_styles() -> None:
             text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.65rem !important; color: #cbd5e1 !important;
             font-weight: 600 !important; justify-content: flex-start !important; text-align: left;
           }
+          /* Fallback: ensure field labels stay visible even if body class injection is unavailable */
+          [data-testid="stForm"] [data-testid="stWidgetLabel"] p,
+          [data-testid="stForm"] [data-testid="stWidgetLabel"] label,
+          [data-testid="stForm"] label {
+            color: #dbeafe !important;
+            opacity: 1 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 0.68rem !important;
+            font-weight: 700 !important;
+          }
           body.auth-sqg-landing [data-testid="stForm"] [data-baseweb="form-control-container"] {
             align-items: flex-start; text-align: left;
           }
@@ -168,6 +179,21 @@ def render_auth_styles() -> None:
             background: #6d28d9 !important; color: #fff !important; border: 1px solid #5b21b6 !important; font-weight: 600;
             border-radius: 8px; min-height: 44px;
           }
+          /* Fallback submit button colors (in case body class selectors do not apply) */
+          [data-testid="stFormSubmitButton"] button {
+            background: #6d28d9 !important;
+            border: 1px solid #5b21b6 !important;
+            color: #dbeafe !important;
+            font-weight: 700 !important;
+          }
+          [data-testid="stFormSubmitButton"] button *,
+          [data-testid="stFormSubmitButton"] button p,
+          [data-testid="stFormSubmitButton"] button span,
+          [data-testid="stFormSubmitButton"] button div,
+          [data-testid="stFormSubmitButton"] button label {
+            color: #dbeafe !important;
+            fill: #dbeafe !important;
+          }
           body.auth-sqg-landing [data-testid="stForm"] [data-testid="stVerticalBlockBorderWrapper"] {
             background: transparent !important; border: none !important; padding: 0 !important; box-shadow: none !important;
           }
@@ -186,6 +212,23 @@ def render_auth_styles() -> None:
           body.auth-sqg-landing [data-testid="column"] [data-testid="stButton"] button {
             background: #18181b !important; color: #e4e4e7 !important; border: 1px solid #3f3f46 !important;
             border-radius: 8px !important;
+          }
+          /* Fallback secondary/nav button colors (Create account / Sign in link button) */
+          [data-testid="stButton"] button {
+            background: #e2e8f0 !important;
+            color: #0f172a !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+          }
+          [data-testid="stButton"] button *,
+          [data-testid="stButton"] button p,
+          [data-testid="stButton"] button span,
+          [data-testid="stButton"] button div,
+          [data-testid="stButton"] button label {
+            color: #0f172a !important;
+            fill: #0f172a !important;
+            opacity: 1 !important;
           }
 
           /* Purple panels — sign-in right */

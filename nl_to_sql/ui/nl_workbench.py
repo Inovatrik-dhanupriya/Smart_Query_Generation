@@ -172,6 +172,837 @@ def _post_schema_job_control(job_id: str, session_id: str, action: str) -> bool:
         return False
 
 
+def _render_configuration_getting_started() -> None:
+    """Configuration hero + onboarding cards (presentation only, no behavior changes)."""
+    st.markdown(
+        """
+    <style>
+      .cfg-shell { margin-top: 0.15rem; }
+      .cfg-kicker {
+        color: #9ca3af;
+        font-size: 0.66rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        font-weight: 700;
+        margin: 0.1rem 0 0.45rem 0;
+      }
+      .cfg-card {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 0.82rem 0.95rem;
+        margin-bottom: 0.42rem;
+      }
+      .cfg-card--info {
+        background: #f8fafc;
+        border-color: #e2e8f0;
+      }
+      .cfg-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.6rem;
+      }
+      .cfg-row-main {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.62rem;
+        min-width: 0;
+      }
+      .cfg-dot {
+        width: 1rem;
+        height: 1rem;
+        min-width: 1rem;
+        border-radius: 999px;
+        border: 1px solid #c7d2fe;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #6366f1;
+        background: #eef2ff;
+        font-size: 0.64rem;
+        line-height: 1;
+        margin-top: 0.1rem;
+      }
+      .cfg-step-num {
+        width: 1rem;
+        height: 1rem;
+        min-width: 1rem;
+        border-radius: 999px;
+        border: 1px solid #ddd6fe;
+        color: #6d28d9;
+        background: #f5f3ff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.62rem;
+        margin-top: 0.08rem;
+      }
+      .cfg-title {
+        margin: 0;
+        color: #111827;
+        font-weight: 700;
+        font-size: 0.88rem;
+        line-height: 1.35;
+      }
+      .cfg-desc {
+        margin: 0.15rem 0 0 0;
+        color: #6b7280;
+        font-size: 0.77rem;
+        line-height: 1.45;
+      }
+      .cfg-chip {
+        background: #f3f4f6;
+        border: 1px solid #e5e7eb;
+        color: #374151;
+        border-radius: 6px;
+        padding: 0.06rem 0.32rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.7rem;
+      }
+      .cfg-note {
+        color: #9ca3af;
+        font-size: 0.74rem;
+        margin-top: 0.2rem;
+        text-align: center;
+      }
+      .cfg-chevron {
+        color: #9ca3af;
+        font-size: 0.95rem;
+        line-height: 1;
+        margin-left: 0.4rem;
+        flex-shrink: 0;
+      }
+    </style>
+    <div class="cfg-shell">
+      <p class="cfg-kicker">Getting started</p>
+      <div class="cfg-card cfg-card--info">
+        <div class="cfg-row">
+          <div class="cfg-row-main">
+            <span class="cfg-dot">i</span>
+            <div>
+              <p class="cfg-title">What to do</p>
+              <p class="cfg-desc">
+                Use the sidebar to connect to PostgreSQL, or upload a schema file, then go to
+                <span class="cfg-chip">database &gt; activities &gt; actions</span> and click
+                <span class="cfg-chip">Activate</span>. When you're ready, open
+                <span class="cfg-chip">Chat</span> from the sidebar.
+              </p>
+            </div>
+          </div>
+          <span class="cfg-chevron">›</span>
+        </div>
+      </div>
+
+      <div class="cfg-card">
+        <div class="cfg-row">
+          <div class="cfg-row-main">
+            <span class="cfg-step-num">1</span>
+            <div>
+              <p class="cfg-title">Connect your database</p>
+              <p class="cfg-desc">Fill in <span class="cfg-chip">Host</span> and <span class="cfg-chip">Port</span> in the left panel — or upload a <span class="cfg-chip">.sql</span> schema file if you prefer.</p>
+            </div>
+          </div>
+          <span class="cfg-chevron">›</span>
+        </div>
+      </div>
+
+      <div class="cfg-card">
+        <div class="cfg-row">
+          <div class="cfg-row-main">
+            <span class="cfg-step-num">2</span>
+            <div>
+              <p class="cfg-title">Activate in activities</p>
+              <p class="cfg-desc">Go to <span class="cfg-chip">database &gt; activities &gt; actions</span> and click <span class="cfg-chip">Activate</span> to enable the assistant.</p>
+            </div>
+          </div>
+          <span class="cfg-chevron">›</span>
+        </div>
+      </div>
+
+      <div class="cfg-card">
+        <div class="cfg-row">
+          <div class="cfg-row-main">
+            <span class="cfg-step-num">3</span>
+            <div>
+              <p class="cfg-title">Open Chat and start querying</p>
+              <p class="cfg-desc">Once activated, open <span class="cfg-chip">Chat</span> from the sidebar to query your data in plain English.</p>
+            </div>
+          </div>
+          <span class="cfg-chevron">›</span>
+        </div>
+      </div>
+
+      <p class="cfg-note">Any PostgreSQL instance can be connected · no special configuration required · only activated tables are used.</p>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+def _apply_configuration_ui_redesign_styles() -> None:
+    """Configuration page visual polish (no behavior changes)."""
+    st.markdown(
+        """
+        <style>
+          [data-testid="stSidebar"] h1,
+          [data-testid="stSidebar"] h2,
+          [data-testid="stSidebar"] h3 {
+            margin-bottom: 0.35rem !important;
+            color: #e5efff !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+            color: #9bb0cf !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+          [data-testid="stSidebar"] [data-testid="stWidgetLabel"] label,
+          [data-testid="stSidebar"] label {
+            color: #dce9ff !important;
+            opacity: 1 !important;
+            font-weight: 600 !important;
+          }
+          .cfg-sb-project-row {
+            display: flex;
+            gap: 0.35rem;
+            flex-wrap: wrap;
+            margin: 0.3rem 0 0.55rem 0;
+          }
+          .cfg-sb-chip {
+            background: #142844;
+            color: #e7f0ff;
+            border: 1px solid #3a5f91;
+            border-radius: 6px;
+            padding: 0.12rem 0.36rem;
+            font-size: 0.72rem;
+            line-height: 1.3;
+          }
+          .cfg-sb-sec {
+            margin: 0.8rem 0 0.35rem 0;
+            color: #8ea2c2;
+            font-size: 0.67rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-weight: 700;
+          }
+          [data-testid="stSidebar"] [data-baseweb="input"],
+          [data-testid="stSidebar"] [data-baseweb="select"] {
+            background: #0f172a !important;
+            border: 1px solid #334155 !important;
+            border-radius: 8px !important;
+          }
+          [data-testid="stSidebar"] [data-baseweb="base-input"] {
+            background: #0f172a !important;
+          }
+          [data-testid="stSidebar"] [data-baseweb="input"] input,
+          [data-testid="stSidebar"] [data-baseweb="select"] input {
+            background: #0f172a !important;
+          }
+          [data-testid="stSidebar"] [data-baseweb="input"] input,
+          [data-testid="stSidebar"] [data-baseweb="select"] input,
+          [data-testid="stSidebar"] [data-baseweb="base-input"] {
+            color: #f1f5f9 !important;
+            -webkit-text-fill-color: #f1f5f9 !important;
+            caret-color: #f1f5f9 !important;
+          }
+          [data-testid="stSidebar"] input:-webkit-autofill,
+          [data-testid="stSidebar"] input:-webkit-autofill:hover,
+          [data-testid="stSidebar"] input:-webkit-autofill:focus,
+          [data-testid="stSidebar"] textarea:-webkit-autofill,
+          [data-testid="stSidebar"] select:-webkit-autofill {
+            -webkit-text-fill-color: #f1f5f9 !important;
+            transition: background-color 5000s ease-in-out 0s;
+            box-shadow: 0 0 0px 1000px #0f172a inset !important;
+          }
+          [data-testid="stSidebar"] [data-baseweb="input"] input::placeholder,
+          [data-testid="stSidebar"] [data-baseweb="select"] input::placeholder {
+            color: #64748b !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stRadio"] label p {
+            color: #d6e4ff !important;
+            font-size: 0.8rem !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a {
+            background: linear-gradient(90deg, #1f3a60, #223a58) !important;
+            border: 1px solid #335c87 !important;
+            border-radius: 8px !important;
+            padding: 0.4rem 0.5rem !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a *,
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
+            color: #e5efff !important;
+            fill: #e5efff !important;
+            opacity: 1 !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stPageLink"]:nth-of-type(1) a,
+          [data-testid="stSidebar"] [data-testid="stPageLink"]:nth-of-type(2) a {
+            background: linear-gradient(90deg, #244b7b, #1e3f66) !important;
+            border-color: #3f73ac !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {
+            background: linear-gradient(90deg, #3b82f6, #2563eb) !important;
+            border: 1px solid #1d4ed8 !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] *,
+          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p,
+          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] span {
+            color: #dbeafe !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
+            background: #0f172a !important;
+            border: 1px solid #334155 !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] *,
+          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] p,
+          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] span {
+            color: #e2e8f0 !important;
+          }
+          /* Upload schema tab controls */
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+            background: #0f172a !important;
+            border: 1px dashed #33527a !important;
+            border-radius: 10px !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {
+            color: #c9ddfb !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] [data-testid="stMarkdownContainer"] small,
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] [data-testid="stCaptionContainer"] {
+            color: #92add2 !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {
+            background: linear-gradient(90deg, #1d4ed8, #2563eb) !important;
+            border: 1px solid #1e40af !important;
+            color: #ffffff !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button * {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {
+            color: #dbeafe !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDeleteBtn"] button {
+            background: #7f1d1d !important;
+            border: 1px solid #b91c1c !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDeleteBtn"] button * {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+          }
+          .cfg-main-title {
+            margin: 0;
+            color: #111827;
+            font-size: 2.05rem;
+            font-weight: 800;
+            letter-spacing: -0.01em;
+          }
+          .cfg-main-subtitle {
+            margin: 0.2rem 0 0.8rem 0;
+            color: #6b7280;
+            font-size: 0.92rem;
+          }
+          .cfg-user-chip-main {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 0.38rem;
+            padding: 0 0.55rem;
+            border-radius: 8px;
+            border: 1px solid #325d92;
+            background: linear-gradient(90deg, #1e3a5f, #253d63);
+            color: #ecf3ff;
+            font-size: 0.78rem;
+            font-weight: 700;
+            margin: 0;
+            width: 100%;
+            height: 2.25rem;
+            box-sizing: border-box;
+          }
+          .cfg-user-chip-ico {
+            width: 1.35rem;
+            height: 1.35rem;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(59, 130, 246, 0.28);
+            border: 1px solid rgba(191, 219, 254, 0.45);
+            color: #f8fbff;
+            font-size: 0.72rem;
+            font-weight: 800;
+            line-height: 1;
+            flex-shrink: 0;
+          }
+          .cfg-user-chip-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .cfg-user-actions {
+            max-width: 220px;
+            margin-left: auto;
+          }
+          .cfg-user-actions [data-testid="stButton"] { margin: 0 !important; }
+          .cfg-user-actions [data-testid="stButton"] button {
+            height: 2.25rem !important;
+            min-height: 2.25rem !important;
+            box-sizing: border-box !important;
+          }
+          section.main [data-testid="stButton"] button[kind="secondary"] {
+            background: #7f1d1d !important;
+            border: 1px solid #b91c1c !important;
+            color: #fff !important;
+          }
+          section.main [data-testid="stButton"] button[kind="secondary"] * {
+            color: #fff !important;
+            fill: #fff !important;
+          }
+          section.main [data-testid="stAlert"] {
+            border-radius: 8px !important;
+            border-width: 1px !important;
+          }
+          section.main [data-testid="stAlert"][kind="warning"] {
+            background: #fffbeb !important;
+            border-color: #fde68a !important;
+          }
+          section.main [data-testid="stAlert"][kind="warning"] * {
+            color: #b45309 !important;
+          }
+          section.main [data-testid="stAlert"][kind="info"] {
+            background: #eff6ff !important;
+            border-color: #bfdbfe !important;
+          }
+          section.main [data-testid="stAlert"][kind="info"] * {
+            color: #1e3a8a !important;
+          }
+          /* Main content panel (right side) to match light screenshot */
+          section.main {
+            background: #f3f4f6 !important;
+          }
+          section.main > div.block-container {
+            background: #ffffff !important;
+            border: 1px solid #e5e7eb !important;
+            border-radius: 12px !important;
+            padding: 1.05rem 1.25rem 1.25rem !important;
+            margin-top: 0.65rem !important;
+          }
+          section.main [data-testid="stProgressBar"] > div > div {
+            background: #8b5cf6 !important;
+          }
+          section.main [data-testid="stProgressBar"] {
+            background: #e5e7eb !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_no_active_project_state(page_name: str = "chat") -> None:
+    """Styled empty state when no project is selected (Chat / Configuration)."""
+    page = (page_name or "chat").strip().lower()
+    action_text = "starting chat sessions" if page == "chat" else "opening configuration"
+    followup_text = (
+        "Once selected, you can connect your database and ask questions in natural language."
+        if page == "chat"
+        else "Once selected, you can connect your database, activate schema, and continue setup."
+    )
+
+    st.markdown(
+        """
+        <style>
+          [data-testid="stSidebarUserContent"] {
+            display: flex;
+            flex-direction: column;
+            min-height: calc(100vh - 4rem);
+          }
+          .np-sb-bottom { margin-top: auto; }
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a {
+            color: #e2e8f0 !important;
+            background: #172038 !important;
+            border: 1px solid #2a3a5e !important;
+            border-radius: 8px !important;
+            padding: 0.45rem 0.55rem !important;
+            text-decoration: none !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a *,
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
+            color: #e2e8f0 !important;
+            fill: #e2e8f0 !important;
+            opacity: 1 !important;
+          }
+          [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
+            border-color: #3f5480 !important;
+            background: #1b2642 !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.sidebar:
+        st.page_link("pages/dashboard.py", label="Back to dashboard", icon="🏠")
+        st.markdown(
+            """
+            <div class="np-sb-bottom">
+              <p style="margin:0 0 .35rem 0;color:#8ea2c2;font-size:.74rem;text-transform:uppercase;letter-spacing:.08em;">Recent activity</p>
+              <p style="margin:0;color:#97aac7;font-size:.82rem;">• Waiting for project…</p>
+              <p style="margin:.25rem 0 0 0;color:#97aac7;font-size:.82rem;">• Security: OK</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    _no_project_html = """
+        <style>
+          .np-wrap {
+            position: relative;
+            min-height: 78vh;
+            border-radius: 14px;
+            overflow: hidden;
+            border: 1px solid #17263d;
+            background:
+              linear-gradient(180deg, rgba(8,17,32,0.96) 0%, rgba(7,14,28,0.96) 100%);
+          }
+          .np-wrap::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image:
+              linear-gradient(rgba(53,88,135,0.14) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(53,88,135,0.14) 1px, transparent 1px);
+            background-size: 36px 36px;
+            opacity: 0.42;
+            pointer-events: none;
+          }
+          .np-center {
+            position: relative;
+            z-index: 1;
+            min-height: 78vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            text-align: center;
+          }
+          .np-card { max-width: 560px; }
+          .np-icon {
+            width: 64px;
+            height: 64px;
+            border-radius: 14px;
+            margin: 0 auto 0.9rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.35rem;
+            color: #fca5a5;
+            background: rgba(127, 29, 29, 0.24);
+            border: 1px solid rgba(248, 113, 113, 0.35);
+            box-shadow: 0 10px 26px rgba(0,0,0,0.35);
+          }
+          .np-title {
+            margin: 0;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #f8fafc;
+            letter-spacing: -0.01em;
+          }
+          .np-sub {
+            margin: 0.6rem auto 1rem;
+            max-width: 520px;
+            color: #9fb3d1;
+            line-height: 1.5;
+            font-size: 0.95rem;
+          }
+          .np-btn-wrap { margin-top: 1rem; }
+          .np-action-row { margin-top: 1.25rem; }
+        </style>
+        <div class="np-wrap">
+          <div class="np-center">
+            <div class="np-card">
+              <div class="np-icon">!</div>
+              <h2 class="np-title">No active project</h2>
+              <p class="np-sub">
+                Open or create a project from the dashboard before __ACTION_TEXT__.
+                __FOLLOWUP_TEXT__
+              </p>
+              <div class="np-btn-wrap"></div>
+            </div>
+          </div>
+        </div>
+        """
+    st.markdown(
+        _no_project_html.replace("__ACTION_TEXT__", action_text).replace(
+            "__FOLLOWUP_TEXT__", followup_text
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="np-action-row"></div>', unsafe_allow_html=True)
+    _, c1, _ = st.columns([2, 1.4, 2])
+    with c1:
+        if st.button(
+            "Go to dashboard",
+            key="np_go_dashboard",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.switch_page("pages/dashboard.py")
+
+
+def _render_chat_locked_ui() -> None:
+    """Styled locked-chat screen (UI only) until schema activation is complete."""
+    _auth = st.session_state.auth_user or {}
+    _user = (_auth.get("username") or "user").strip()
+    _user_initial = (_user[:1] or "U").upper()
+    _p = find_project_by_id(get_active_project_id() or "")
+    _pcc = (str(((_p or {}).get("client_code") or ""))).strip()
+    _pname = (_p or {}).get("name") or "—"
+    _comp = get_tenant_by_id((_p or {}).get("tenant_id") or "")
+    _cn = (_comp or {}).get("name") or ""
+
+    st.markdown(
+        """
+        <style>
+          .chat-lock-shell {
+            min-height: 72vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 1.2rem 0.8rem 1.6rem;
+          }
+          .chat-lock-card { max-width: 560px; width: 100%; }
+          .chat-lock-ico {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 1rem;
+            border-radius: 18px;
+            border: 1px solid #2a3658;
+            background: rgba(30, 41, 82, 0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #a5b4fc;
+            font-size: 1.65rem;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+          }
+          .chat-lock-title {
+            margin: 0;
+            color: #eef2ff;
+            font-size: 1.9rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+          }
+          .chat-lock-sub {
+            margin: 0.55rem auto 1.15rem;
+            color: #9ca3af;
+            max-width: 480px;
+            line-height: 1.55;
+            font-size: 0.95rem;
+          }
+          .chat-lock-steps {
+            margin: 1.25rem auto 0;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.65rem;
+            max-width: 520px;
+            border-top: 1px solid #1f2937;
+            padding-top: 0.9rem;
+          }
+          .chat-lock-step {
+            color: #6b7280;
+            font-size: 0.75rem;
+            line-height: 1.35;
+          }
+          .chat-lock-step b {
+            display: inline-flex;
+            width: 1.3rem;
+            height: 1.3rem;
+            border-radius: 999px;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #374151;
+            color: #9ca3af;
+            margin-bottom: 0.2rem;
+            font-size: 0.7rem;
+          }
+          .chat-sb-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.7rem;
+          }
+          .chat-sb-brand-ico {
+            width: 1.45rem;
+            height: 1.45rem;
+            border-radius: 6px;
+            background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 0.75rem;
+            font-weight: 700;
+          }
+          .chat-sb-brand-name {
+            color: #f8fafc;
+            font-size: 0.9rem;
+            font-weight: 700;
+          }
+          .chat-sb-user {
+            background: rgba(17, 24, 39, 0.72);
+            border: 1px solid #1f2937;
+            border-radius: 10px;
+            padding: 0.58rem 0.62rem;
+            margin: 0.55rem 0 0.9rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+          }
+          .chat-sb-user-left {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 0;
+          }
+          .chat-sb-user-ico {
+            width: 1.6rem;
+            height: 1.6rem;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #f59e0b, #f97316);
+            color: #111827;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.74rem;
+            font-weight: 800;
+            flex-shrink: 0;
+          }
+          .chat-sb-user-name {
+            color: #e5e7eb;
+            font-size: 0.82rem;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .chat-sb-user-sub {
+            color: #9ca3af;
+            font-size: 0.73rem;
+          }
+          .chat-sb-sec {
+            color: #6b7280;
+            font-size: 0.66rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-weight: 700;
+            margin: 0.85rem 0 0.35rem;
+          }
+          .chat-sb-chip-wrap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.34rem;
+            margin-bottom: 0.55rem;
+          }
+          .chat-sb-chip {
+            background: #181d2b;
+            border: 1px solid #312e81;
+            color: #c4b5fd;
+            border-radius: 999px;
+            padding: 0.08rem 0.38rem;
+            font-size: 0.68rem;
+          }
+          .chat-sb-muted {
+            color: #9ca3af;
+            font-size: 0.78rem;
+            line-height: 1.4;
+            margin-bottom: 0.75rem;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.sidebar:
+        st.markdown(
+            (
+                '<div class="chat-sb-brand">'
+                '<span class="chat-sb-brand-ico">Q</span>'
+                '<span class="chat-sb-brand-name">NL → SQL</span>'
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            (
+                '<div class="chat-sb-user">'
+                '<div class="chat-sb-user-left">'
+                f'<span class="chat-sb-user-ico">{_user_initial}</span>'
+                '<div>'
+                f'<div class="chat-sb-user-name">{_user}</div>'
+                '<div class="chat-sb-user-sub">Signed in</div>'
+                "</div></div></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        if st.button("Sign out", use_container_width=True, key="signout_gated"):
+            st.session_state.auth_user = None
+            st.switch_page("pages/signin.py")
+            st.stop()
+
+        st.markdown('<p class="chat-sb-sec">Project</p>', unsafe_allow_html=True)
+        st.markdown(
+            (
+                '<div class="chat-sb-chip-wrap">'
+                + (f'<span class="chat-sb-chip">{_pcc}</span>' if _pcc else "")
+                + (f'<span class="chat-sb-chip">{_pname}</span>' if _pname else "")
+                + (f'<span class="chat-sb-chip">{_cn}</span>' if _cn else "")
+                + "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="chat-sb-muted">Natural language to SQL conversion for your database schema.</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('<p class="chat-sb-sec">Navigation</p>', unsafe_allow_html=True)
+        st.page_link("pages/project_configuration.py", label="Configuration", icon="⚙️")
+        st.page_link("pages/project_chat.py", label="Chat", icon="💬")
+
+    st.markdown(
+        """
+        <div class="chat-lock-shell">
+          <div class="chat-lock-card">
+            <div class="chat-lock-ico">🔒</div>
+            <h2 class="chat-lock-title">Chat is locked</h2>
+            <p class="chat-lock-sub">
+              Activate a schema in <b>Configuration</b> to unlock the chat interface
+              and start querying.
+            </p>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    _c1, _c2, _c3 = st.columns([2.6, 1.8, 2.6])
+    with _c2:
+        if st.button("Open Configuration ↗", type="primary", key="main_gate_m1", use_container_width=True):
+            st.switch_page("pages/project_configuration.py")
+
+    st.markdown(
+        """
+        <div class="chat-lock-steps">
+          <div class="chat-lock-step"><b>1</b><br/>Open<br/>Configuration</div>
+          <div class="chat-lock-step"><b>2</b><br/>Activate a<br/>schema</div>
+          <div class="chat-lock-step"><b>3</b><br/>Chat<br/>unlocks</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 @st.fragment(run_every=timedelta(seconds=2))
 def _poll_schema_upload_job_fragment() -> None:
     """Background schema activation: real table progress + Pause / Resume / Cancel."""
@@ -256,8 +1087,11 @@ def run() -> None:
     # ── Session (per project / FastAPI session_id) ─────────────────────────────
     apply_project_workspace(ensure_tenant_state)
     if not get_active_project_id() or not find_project_by_id(get_active_project_id() or ""):
-        st.error("No active project. Open a project from the dashboard first.")
-        st.page_link("pages/dashboard.py", label="Back to dashboard", icon="🏠")
+        if workbench_page() in ("chat", "configuration"):
+            _render_no_active_project_state(workbench_page())
+        else:
+            st.error("No active project. Open a project from the dashboard first.")
+            st.page_link("pages/dashboard.py", label="Back to dashboard", icon="🏠")
         st.stop()
     # Dynamic DB connection (API session mirrors per-project session_id)
     _DB_DEFAULTS = {
@@ -293,6 +1127,9 @@ def run() -> None:
     st.session_state.setdefault("row_limit", 20)
     st.session_state.setdefault("schema_job_paused", False)
     st.session_state.setdefault("show_chat_invite", False)
+    st.session_state.setdefault("schema_upload_need_connection_help", False)
+    st.session_state.setdefault("_pending_cfg_source_live", False)
+    st.session_state.setdefault("_pending_upload_mode_new_connection", False)
 
     # API calls use the per-project session id (mirrors st.session_state.session_id)
     _sid = st.session_state.session_id
@@ -328,6 +1165,7 @@ def run() -> None:
 
     # ── Block Chat until Configuration has an activated schema ───────────────────
     if workbench_page() == "chat" and not _nl_session_ready():
+<<<<<<< HEAD
         _render_workbench_sidebar_shell(signout_key="signout_gated")
         with st.sidebar:
             st.info("Open **Configuration** and activate a schema before using Chat.")
@@ -345,6 +1183,11 @@ def run() -> None:
         signout_key="signout_cfg" if workbench_page() == "configuration" else "signout_chat"
     )
 
+=======
+        _render_chat_locked_ui()
+        st.stop()
+
+>>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
     # ── Sidebar: chat tuning (Chat page only) ─────────────────────────────────
     if workbench_page() == "chat":
         with st.sidebar:
@@ -397,17 +1240,74 @@ def run() -> None:
                         st.error(str(ex))
                 st.rerun()
 
+<<<<<<< HEAD
+=======
+    # ── Sidebar: workspace nav (chat page; config has dedicated sidebar layout) ─
+    if workbench_page() != "configuration":
+        with st.sidebar:
+            st.markdown("### NL → SQL")
+            _p = find_project_by_id(get_active_project_id() or "")
+            _pname = (_p or {}).get("name") or "—"
+            _pcc = (str(((_p or {}).get("client_code") or ""))).strip()
+            _comp = get_tenant_by_id((_p or {}).get("tenant_id") or "")
+            _cn = (_comp or {}).get("name") or ""
+            st.caption(
+                f"**Project:** `{_pname}`"
+                + (f"  ·  **Company:** `{_cn}`" if _cn else "")
+                + (f"  ·  **Label:** `{_pcc}`" if _pcc else "")
+            )
+            st.caption("Natural language to SQL")
+            st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
+            st.page_link("pages/project_chat.py", label="Chat", icon="💬")
+            st.divider()
+    
+>>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
     # ── Sidebar: database & schema (Configuration page only) ────────────────────
     if workbench_page() == "configuration":
+        _apply_configuration_ui_redesign_styles()
         with st.sidebar:
-            st.header("🗄️ Your database & schema")
-            st.info(
-                "**Query execution** uses the **customer PostgreSQL** you connect to below "
-                "(host/user/database from **Connect** / **Activate**). It does **not** run on the app’s internal user database."
+            _p = find_project_by_id(get_active_project_id() or "")
+            _pname = (_p or {}).get("name") or "—"
+            _pcc = (str(((_p or {}).get("client_code") or ""))).strip()
+            _comp = get_tenant_by_id((_p or {}).get("tenant_id") or "")
+            _cn = (_comp or {}).get("name") or ""
+
+            st.markdown("### NL → SQL")
+            st.caption("Project context")
+            st.markdown(
+                (
+                    '<div class="cfg-sb-project-row">'
+                    + f'<span class="cfg-sb-chip">{_pname}</span>'
+                    + (f'<span class="cfg-sb-chip">{_cn}</span>' if _cn else "")
+                    + (f'<span class="cfg-sb-chip">{_pcc}</span>' if _pcc else "")
+                    + "</div>"
+                ),
+                unsafe_allow_html=True,
             )
+            st.page_link("pages/dashboard.py", label="Go to dashboard", icon="🏠")
+            st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
+            st.page_link("pages/project_chat.py", label="Chat", icon="💬")
+            st.divider()
+
+            st.markdown('<p class="cfg-sb-sec">Settings</p>', unsafe_allow_html=True)
+            st.toggle("Natural language to SQL", value=True, key="cfg_nl_sql_toggle")
+            st.markdown('<p class="cfg-sb-sec">Database connection</p>', unsafe_allow_html=True)
+
+            # Apply pending source/mode switches BEFORE creating radio widgets
+            if st.session_state.pop("_pending_cfg_source_live", False):
+                st.session_state["cfg_schema_source"] = "Live PostgreSQL"
+            if st.session_state.pop("_pending_upload_mode_new_connection", False):
+                st.session_state["cfg_schema_source"] = "Upload schema JSON"
+                st.session_state["schema_json_upload_mode"] = (
+                    "New connection — PostgreSQL host/user, connect, then upload JSON"
+                )
 
             _src = st.radio(
-                "Schema source", ["Live PostgreSQL", "Upload schema JSON"], horizontal=True
+                "Source",
+                ["Live PostgreSQL", "Upload schema JSON"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="cfg_schema_source",
             )
             st.session_state.conn_source = "file" if _src.startswith("Upload") else "live"
     
@@ -433,8 +1333,6 @@ def run() -> None:
                 if _je:
                     st.error(_je)
     
-                _poll_schema_upload_job_fragment()
-    
                 _upload_mode = st.radio(
                     "Schema JSON",
                     (
@@ -451,18 +1349,12 @@ def run() -> None:
     
                 if _use_new_pg:
                     st.markdown("##### 1 — Connect to PostgreSQL")
-                    st.caption("Use the same fields as **Live PostgreSQL** — connect and open the target database, then upload the file below.")
+                    st.caption("Enter PostgreSQL credentials and validate the connection first.")
                     st.session_state.conn_host = st.text_input("Host", value=st.session_state.conn_host, key="in_host")
                     st.session_state.conn_port = st.text_input("Port", value=st.session_state.conn_port or "5432", key="in_port")
                     st.session_state.conn_user = st.text_input("Username", value=st.session_state.conn_user, key="in_user")
                     st.session_state.conn_pass = st.text_input("Password", type="password", value=st.session_state.conn_pass, key="in_pass")
-                    st.caption("Initial DB for listing: leave blank to use your **username** as the database name.")
-                    st.session_state.catalog_db = st.text_input(
-                        "Initial database (optional)",
-                        value=st.session_state.catalog_db,
-                        key="in_catdb",
-                    )
-                    if st.button("Connect", key="btn_connect_file_upload"):
+                    if st.button("Connect", key="btn_connect_file_upload", type="primary"):
                         try:
                             port = int((st.session_state.conn_port or "5432").strip() or "5432")
                         except ValueError:
@@ -475,8 +1367,6 @@ def run() -> None:
                             "username": (st.session_state.conn_user or "").strip(),
                             "password": st.session_state.conn_pass or "",
                         }
-                        if (st.session_state.catalog_db or "").strip():
-                            body["catalog_database"] = st.session_state.catalog_db.strip()
                         try:
                             r = requests.post(f"{API_URL}/db/connect", json=body, timeout=45)
                             info, jerr = safe_response_payload(r)
@@ -485,13 +1375,19 @@ def run() -> None:
                             elif r.ok and isinstance(info, dict):
                                 st.session_state.db_list = info.get("databases") or []
                                 st.session_state.pg_session_connected = True
-                                st.success(f"Connected — {len(st.session_state.db_list)} database(s) listed.")
+                                st.session_state.schema_list = []
+                                st.session_state.schema_upload_need_connection_help = False
+                                st.success(f"Connection valid — {len(st.session_state.db_list)} database(s) found.")
                             else:
                                 st.error((info or {}).get("detail", "Connect failed") if isinstance(info, dict) else "Connect failed")
                         except Exception as ex:
                             st.error(str(ex))
     
-                    if st.session_state.db_list:
+                    if st.session_state.get("pg_session_connected"):
+                        st.markdown("##### 2 — Choose target database")
+                        st.caption("After connection is valid, select an existing database or provide a new one to create during activation.")
+
+                    if st.session_state.get("pg_session_connected") and st.session_state.db_list:
                         st.selectbox(
                             "Choose database",
                             options=st.session_state.db_list,
@@ -508,16 +1404,53 @@ def run() -> None:
                                 if jerr:
                                     st.error(jerr)
                                 elif r.ok:
-                                    st.success("Database opened — you can upload the schema JSON below.")
+                                    try:
+                                        rs = requests.get(
+                                            f"{API_URL}/db/schemas",
+                                            params={"session_id": _sid},
+                                            timeout=45,
+                                        )
+                                        if rs.ok:
+                                            st.session_state.schema_list = rs.json().get("schemas") or []
+                                        else:
+                                            st.session_state.schema_list = []
+                                    except Exception:
+                                        st.session_state.schema_list = []
+                                    st.success("Database opened — schema list loaded.")
                                 else:
                                     st.error((info or {}).get("detail", "Failed") if isinstance(info, dict) else "Failed")
                             except Exception as ex:
                                 st.error(str(ex))
+
+                    if st.session_state.get("pg_session_connected"):
+                        _new_db = st.text_input(
+                            "New DB name (optional)",
+                            key="new_db_name_upload",
+                            placeholder="e.g. analytics_db",
+                        )
+                        if _new_db.strip():
+                            if st.button("Use new database name", key="btn_use_new_db_upload"):
+                                st.session_state.sb_database = _new_db.strip()
+                                st.session_state.file_db_name = _new_db.strip()
+                                st.session_state.schema_list = []
+                                st.info(
+                                    f"New target database set to `{_new_db.strip()}`. "
+                                    "It will be created when you activate with server DDL enabled."
+                                )
+
+                    if st.session_state.get("pg_session_connected") and st.session_state.get("schema_list"):
+                        st.multiselect(
+                            "Schemas (detected)",
+                            options=st.session_state.schema_list,
+                            default=st.session_state.schema_list[: min(6, len(st.session_state.schema_list))],
+                            disabled=True,
+                            key="ms_schemas_upload_preview",
+                        )
     
                     st.divider()
-                    st.markdown("##### 2 — Upload schema JSON")
-                    if not st.session_state.db_list:
-                        st.info("Connect above first so the session keeps your database login with the uploaded file.")
+                    st.markdown("##### 3 — Upload schema JSON")
+                    if not st.session_state.get("pg_session_connected"):
+                        st.info("Connect above first. Database and schema options appear after successful validation.")
                 else:
                     st.caption(
                         "No host or password — the JSON is loaded in-memory for NL→SQL. "
@@ -530,6 +1463,22 @@ def run() -> None:
                     key="sf_dbname",
                     help="Used as the PostgreSQL database name when you create tables on the server; otherwise a logical label for NL→SQL.",
                 )
+                _target_db_name = (st.session_state.file_db_name or "").strip()
+                _existing_db_names = {
+                    str(x).strip().lower()
+                    for x in (st.session_state.get("db_list") or [])
+                    if str(x).strip()
+                }
+                _target_exists_in_connected_db = (
+                    bool(st.session_state.get("pg_session_connected"))
+                    and bool(_target_db_name)
+                    and _target_db_name.lower() in _existing_db_names
+                )
+                if _target_exists_in_connected_db:
+                    st.warning(
+                        f"Database `{_target_db_name}` already exists in the connected PostgreSQL instance. "
+                        "Choose a different target database name before activation."
+                    )
                 _provision = st.checkbox(
                     "Create database & tables on PostgreSQL from this JSON (server DDL)",
                     key="provision_pg_ddl",
@@ -544,7 +1493,7 @@ def run() -> None:
                 _remote_limit = str(_rd)
                 if _provision:
                     _remote_url = st.text_input(
-                        "Remote SQL API URL (optional — loads row data after DDL)",
+                        "Remote SQL API URL (required — loads row data after DDL)",
                         key="sf_remote_api_url",
                         help=(
                             "POST JSON body `{\"query\": \"SELECT ...\"}` (same as your SQL passthrough). "
@@ -564,16 +1513,27 @@ def run() -> None:
                         ),
                     )
                 _sf = st.file_uploader("Schema JSON", type=["json"], key="sf_upload")
-                if st.button("Activate uploaded schema", type="primary"):
+                _has_remote_url = bool((_remote_url or "").strip())
+                _has_remote_limit = bool((_remote_limit or "").strip())
+                _enable_activate_upload = bool(_provision and _has_remote_url and _has_remote_limit)
+                if not _provision:
+                    st.session_state.schema_upload_need_connection_help = False
+                    st.caption("Enable **Create database & tables...** to activate this button.")
+                elif not _has_remote_url or not _has_remote_limit:
+                    st.caption("Fill **Remote SQL API URL** and **Max rows per table from API** to enable activation.")
+                _disable_activate_btn = bool(not _enable_activate_upload or _target_exists_in_connected_db)
+                if st.button("Activate uploaded schema", type="primary", disabled=_disable_activate_btn):
                     if not (st.session_state.file_db_name or "").strip():
                         st.error("Enter a target database name.")
                     elif not _sf:
                         st.error("Choose a JSON file.")
-                    elif _provision and not (_use_new_pg or st.session_state.get("pg_session_connected")):
+                    elif _target_exists_in_connected_db:
                         st.error(
-                            "Connect to PostgreSQL first: open **Live PostgreSQL** and click **Connect**, "
-                            "or choose **New connection** here and connect — then activate again."
+                            f"Target database `{_target_db_name}` already exists. "
+                            "Please provide a new database name."
                         )
+                    elif _provision and not (_use_new_pg or st.session_state.get("pg_session_connected")):
+                        st.session_state.schema_upload_need_connection_help = True
                     else:
                         try:
                             _keep = (
@@ -661,6 +1621,7 @@ def run() -> None:
                                 if jerr:
                                     st.error(jerr)
                                 elif r.ok and isinstance(info, dict):
+                                    st.session_state.schema_upload_need_connection_help = False
                                     st.session_state.nl_ready = True
                                     st.session_state.cfg_dialog_open = False
                                     st.session_state.show_chat_invite = True
@@ -685,6 +1646,22 @@ def run() -> None:
                                     )
                         except Exception as ex:
                             st.error(str(ex))
+
+                if st.session_state.get("schema_upload_need_connection_help"):
+                    st.warning(
+                        "Connection required for server DDL. "
+                        "Choose one of the options below to continue."
+                    )
+                    _h1, _h2 = st.columns(2)
+                    if _h1.button("Use New connection", key="goto_new_conn_help", use_container_width=True):
+                        st.session_state["_pending_upload_mode_new_connection"] = True
+                        st.session_state.schema_upload_need_connection_help = False
+                        st.rerun()
+                    if _h2.button("Go to Live PostgreSQL", key="goto_live_conn_help", use_container_width=True):
+                        st.session_state["_pending_cfg_source_live"] = True
+                        st.session_state.conn_source = "live"
+                        st.session_state.schema_upload_need_connection_help = False
+                        st.rerun()
             else:
                 st.session_state.conn_host = st.text_input("Host", value=st.session_state.conn_host, key="in_host")
                 st.session_state.conn_port = st.text_input("Port", value=st.session_state.conn_port or "5432", key="in_port")
@@ -696,7 +1673,7 @@ def run() -> None:
                     value=st.session_state.catalog_db,
                     key="in_catdb",
                 )
-                if st.button("Connect"):
+                if st.button("Connect & activate", type="primary"):
                     try:
                         port = int((st.session_state.conn_port or "5432").strip() or "5432")
                     except ValueError:
@@ -943,7 +1920,7 @@ def run() -> None:
                 st.caption("⚠️ API not reachable")
 
             st.divider()
-            st.subheader("Schema refresh")
+            st.markdown('<p class="cfg-sb-sec">Schema refresh</p>', unsafe_allow_html=True)
             st.caption("Re-fetches the latest table/column metadata from the **connected** database (not available for *upload-only* / file JSON without a live pool).")
             if st.button("🔄 Update schema from database", type="secondary", key="btn_upd_sch_cfg"):
                 with st.spinner("Re-fetching schema…"):
@@ -987,11 +1964,48 @@ def run() -> None:
     
     # ── Main area ─────────────────────────────────────────────────────────────────
     if workbench_page() == "configuration":
+<<<<<<< HEAD
         st.markdown('<div class="sqg-dash-title"><h1>Configuration</h1></div>', unsafe_allow_html=True)
         st.markdown(
             '<p class="sqg-dash-sub">Connect your database (or upload schema), choose tables, then activate before opening Chat.</p>',
             unsafe_allow_html=True,
         )
+=======
+        _cfg_user = (st.session_state.auth_user or {}).get("username", "admin")
+        _cfg_initial = (_cfg_user[:1] if isinstance(_cfg_user, str) and _cfg_user else "U").upper()
+        _cfg_l, _cfg_r = st.columns([7.0, 2.0], gap="small")
+        with _cfg_l:
+            st.markdown('<h1 class="cfg-main-title">Configuration</h1>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="cfg-main-subtitle">Set up your data source and activate the sidebar assistant.</p>',
+                unsafe_allow_html=True,
+            )
+        with _cfg_r:
+            st.markdown('<div class="cfg-user-actions">', unsafe_allow_html=True)
+            _u1, _u2 = st.columns([1.05, 1.05], gap="small")
+            with _u1:
+                st.markdown(
+                    (
+                        '<div class="cfg-user-chip-main">'
+                        f'<span class="cfg-user-chip-ico">{_cfg_initial}</span>'
+                        f'<span class="cfg-user-chip-name">{_cfg_user}</span>'
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with _u2:
+                if st.button("Sign out", key="signout_cfg_top_main", use_container_width=True, type="secondary"):
+                    st.session_state.auth_user = None
+                    st.switch_page("pages/signin.py")
+                    st.stop()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Show long-running schema activation progress in main area (not sidebar).
+        if st.session_state.get("schema_activation_job_id"):
+            _poll_schema_upload_job_fragment()
+            st.divider()
+
+>>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
         if st.session_state.get("show_chat_invite"):
 
             @st.dialog("Your schema is ready")
@@ -1011,6 +2025,7 @@ def run() -> None:
                         st.rerun()
 
             _invite_chat_dialog()
+<<<<<<< HEAD
         st.markdown(
             """
 <div class="sqg-dash-info" role="note">
@@ -1021,6 +2036,9 @@ def run() -> None:
 """,
             unsafe_allow_html=True,
         )
+=======
+        _render_configuration_getting_started()
+>>>>>>> 9e0ead1d02128a060fdab989e78440a93638cd29
         if st.session_state.pop("schema_chat_nav_blocked", False):
             st.warning("Chat is unavailable while the schema job is still running.")
         _sync_blocking_chat = _schema_activation_running_without_pause()
