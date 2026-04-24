@@ -3,5 +3,9 @@
 [client]
 showSidebarNavigation = false
 
+[server]
+# Avoid Windows watchdog permission errors on hot-reload.
+fileWatcherType = "poll"
+
 [theme]
 primaryColor = "#5b21b6"
