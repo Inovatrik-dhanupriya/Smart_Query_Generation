@@ -114,6 +114,21 @@ def db_sync_schema_default() -> str:
     return (os.getenv("DB_SYNC_SCHEMA") or "").strip()
 
 
+def allow_data_ingestion_to_connected_db() -> bool:
+    """
+    If True, optional flows that **INSERT/upsert business rows** (from a remote
+    HTTP SQL API) into a **user-connected** PostgreSQL are allowed.
+
+    Default **False** — aligns with "store only schema metadata in the app DB;
+    run queries on the client DB" without a background *data copy* feature.
+
+    Does **not** affect: ``POST /db/connect``, ``/reload-schema``,
+    ``POST /generate-sql``, or ``app_project_schema_cache`` (metadata only).
+    """
+    v = (os.getenv("SMART_QUERY_ALLOW_DATA_INGESTION", "") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def cors_origins() -> list[str]:
     """
     Comma-separated origins for FastAPI CORS. If unset, allows common local
