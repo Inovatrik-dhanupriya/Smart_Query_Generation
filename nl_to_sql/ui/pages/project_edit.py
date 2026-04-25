@@ -16,7 +16,14 @@ from ensure_path import install
 install()
 
 from ui.auth.session import clear_auth_session, restore_auth_session
-from ui.theme import apply_dashboard_theme
+from ui.sidebar_icons import (
+    SIDEBAR_CHAT,
+    SIDEBAR_COMPANIES,
+    SIDEBAR_CONFIGURATION,
+    SIDEBAR_OPEN_PROJECT,
+    SIDEBAR_PROJECTS,
+)
+from ui.theme import apply_dashboard_theme, apply_tenant_page_shell
 from ui.tenant.state import (
     PROJECT_STATUS_OPTIONS,
     ensure_tenant_state,
@@ -29,6 +36,7 @@ from ui.tenant.state import (
 
 st.set_page_config(page_title="Edit Project", page_icon="✏️", layout="wide")
 apply_dashboard_theme()
+apply_tenant_page_shell()
 ensure_tenant_state()
 
 if not restore_auth_session():
@@ -44,7 +52,7 @@ _role = "Member"
 with st.sidebar:
     st.markdown(
         f"""
-        <div class="sqg-sb-head">
+        <div class="sqg-sb-top" style="display:flex;align-items:center;gap:0.5rem">
           <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
             <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
               <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
@@ -65,12 +73,12 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.caption("WORKSPACE")
-    st.page_link("pages/dashboard.py", label="Projects", icon="🗃️", help=None)
-    st.page_link("pages/tenants.py", label="Companies", icon="🏬", help=None)
-    st.page_link("pages/project_open.py", label="Open project", icon="📂", help=None)
-    st.page_link("pages/project_chat.py", label="Chat", icon="💬", help=None)
+    st.page_link("pages/dashboard.py", label="Projects", icon=SIDEBAR_PROJECTS, help=None)
+    st.page_link("pages/tenants.py", label="Companies", icon=SIDEBAR_COMPANIES, help=None)
+    st.page_link("pages/project_open.py", label="Open project", icon=SIDEBAR_OPEN_PROJECT, help=None)
+    st.page_link("pages/project_chat.py", label="Chat", icon=SIDEBAR_CHAT, help=None)
     st.caption("SETTINGS")
-    st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧", help=None)
+    st.page_link("pages/project_configuration.py", label="Configuration", icon=SIDEBAR_CONFIGURATION, help=None)
     st.divider()
     st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
     if st.button("Sign out", use_container_width=True, type="secondary", key="edit_sign_out"):
@@ -95,26 +103,12 @@ st.markdown(
 st.markdown(
     """
     <div class="sqg-dash-info" role="note">
-      <div class="sqg-dash-info-ico">ℹ️</div>
+      <div class="sqg-dash-info-ico" aria-hidden="true">i</div>
       <div>Update project details, company, and status (Draft → Active → Archived). Changes apply to this project only.</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-st.markdown(
-    """
-    <style>
-    section.main form [data-baseweb="button"][kind="primary"] p,
-    section.main form [data-baseweb="button"][kind="primary"] span,
-    section.main form [data-baseweb="button"][kind="primary"] div,
-    section.main form [data-baseweb="button"][kind="primary"] label {
-        color: #ffffff !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 _tn_list = [t for t in tenants() if isinstance(t, dict)]
 _tn_labels = [str(t.get("name", "?")) for t in _tn_list]
 _tn_by_label = {str(t.get("name", "?")): t.get("id") for t in _tn_list}
@@ -127,7 +121,6 @@ for _t in _tn_list:
 if not _def_label and _tn_labels:
     _def_label = _tn_labels[0]
 
-st.markdown("<div class='sqg-dash-proj'>", unsafe_allow_html=True)
 with st.form("edit_project_form", clear_on_submit=False):
     _sel_t = st.selectbox(
         "Company (tenant)",
@@ -143,7 +136,6 @@ with st.form("edit_project_form", clear_on_submit=False):
         help="Draft: not live yet. Active: configure DB and use Chat. Archived: done / retired (kept, not deleted).",
     )
     submitted = st.form_submit_button("Save Changes", use_container_width=True, type="primary")
-st.markdown("</div>", unsafe_allow_html=True)
 
 if submitted:
     if not name.strip():

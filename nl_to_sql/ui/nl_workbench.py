@@ -60,7 +60,13 @@ _API_PORT = urlparse(API_URL).port or (443 if urlparse(API_URL).scheme == "https
 
 
 from ui.auth.session import clear_auth_session
-from ui.theme import apply_chat_page_theme, apply_dashboard_theme, apply_shared_theme
+from ui.sidebar_icons import (
+    SIDEBAR_CHAT,
+    SIDEBAR_COMPANIES,
+    SIDEBAR_CONFIGURATION,
+    SIDEBAR_OPEN_PROJECT,
+    SIDEBAR_PROJECTS,
+)
 from ui.tenant.project_context import apply_project_workspace, get_active_project_id
 from ui.tenant.state import (
     ensure_tenant_state,
@@ -134,44 +140,50 @@ def _persist_activated_schema_to_app() -> None:
         save_project_schema_cache(int(uid), str(pid), data)
     except Exception:
         pass
-def _render_workbench_sidebar_shell(signout_key: str) -> None:
+
+
+def _render_workbench_sidebar_brand_and_links() -> None:
+    """Shared sidebar chrome (Smart Query, workspace nav). Call inside ``with st.sidebar:`` — same as Tenant Dashboard / Projects page."""
     _auth = st.session_state.auth_user or {}
     _uname = str(_auth.get("username", "user") or "user")
     _init = (html.escape(_uname[:1] or "?")).upper()
     _display = html.escape(_uname)
+    st.markdown(
+        f"""
+        <div class="sqg-sb-top" style="display:flex;align-items:center;gap:0.5rem">
+          <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
+            <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
+              <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
+              <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
+              <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
+            </span>
+          </span>
+          <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
+        </div>
+        <div class="sqg-sb-user">
+          <div class="sqg-sb-av">{_init}</div>
+          <div>
+            <div class="sqg-sb-name">{_display}</div>
+            <div class="sqg-sb-role">Member</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("WORKSPACE")
+    st.page_link("pages/dashboard.py", label="Projects", icon=SIDEBAR_PROJECTS)
+    st.page_link("pages/tenants.py", label="Companies", icon=SIDEBAR_COMPANIES)
+    st.page_link("pages/project_open.py", label="Open project", icon=SIDEBAR_OPEN_PROJECT)
+    st.page_link("pages/project_chat.py", label="Chat", icon=SIDEBAR_CHAT)
+    st.caption("SETTINGS")
+    st.page_link("pages/project_configuration.py", label="Configuration", icon=SIDEBAR_CONFIGURATION)
+    st.divider()
+    st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
 
+
+def _render_workbench_sidebar_shell(signout_key: str) -> None:
     with st.sidebar:
-        st.markdown(
-            f"""
-            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem">
-              <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
-                <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
-                  <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
-                  <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
-                  <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
-                </span>
-              </span>
-              <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
-            </div>
-            <div class="sqg-sb-user">
-              <div class="sqg-sb-av">{_init}</div>
-              <div>
-                <div class="sqg-sb-name">{_display}</div>
-                <div class="sqg-sb-role">Member</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption("WORKSPACE")
-        st.page_link("pages/dashboard.py", label="Projects", icon="🗃️")
-        st.page_link("pages/tenants.py", label="Companies", icon="🏬")
-        st.page_link("pages/project_open.py", label="Open project", icon="📂")
-        st.page_link("pages/project_chat.py", label="Chat", icon="💬")
-        st.caption("SETTINGS")
-        st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
-        st.divider()
-        st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
+        _render_workbench_sidebar_brand_and_links()
         if st.button("Sign out", use_container_width=True, type="secondary", key=signout_key):
             clear_auth_session()
             st.switch_page("pages/signin.py")
@@ -1231,25 +1243,32 @@ def _render_configuration_getting_started() -> None:
     st.markdown(
         """
     <style>
+      /* Light cards + purple accent — match Tenant / Projects (sqg-dash-proj) */
       .cfg-shell { margin-top: 0.15rem; }
       .cfg-kicker {
         color: #9ca3af;
         font-size: 0.66rem;
-        letter-spacing: 0.14em;
+        letter-spacing: 0.12em;
         text-transform: uppercase;
         font-weight: 700;
-        margin: 0.1rem 0 0.45rem 0;
+        margin: 0.1rem 0 0.5rem 0;
       }
       .cfg-card {
         background: #ffffff;
         border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        padding: 0.82rem 0.95rem;
-        margin-bottom: 0.42rem;
+        border-left: 4px solid #7c3aed;
+        border-radius: 12px;
+        padding: 0.9rem 1rem;
+        margin-bottom: 0.55rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        transition: box-shadow 0.18s ease;
       }
+      .cfg-card:hover { box-shadow: 0 8px 24px rgba(124, 58, 237, 0.1); }
       .cfg-card--info {
-        background: #f8fafc;
-        border-color: #e2e8f0;
+        background: linear-gradient(135deg, #ede9fe, #f5f3ff);
+        border: 1px solid #c4b5fd;
+        border-left: 4px solid #7c3aed;
+        box-shadow: 0 2px 8px rgba(124, 58, 237, 0.08);
       }
       .cfg-row {
         display: flex;
@@ -1264,61 +1283,66 @@ def _render_configuration_getting_started() -> None:
         min-width: 0;
       }
       .cfg-dot {
-        width: 1rem;
-        height: 1rem;
-        min-width: 1rem;
+        width: 1.3rem;
+        height: 1.3rem;
+        min-width: 1.3rem;
         border-radius: 999px;
-        border: 1px solid #c7d2fe;
+        border: 1px solid #ddd6fe;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        color: #6366f1;
-        background: #eef2ff;
-        font-size: 0.64rem;
+        color: #6d28d9;
+        background: #ede9fe;
+        font-size: 0.7rem;
+        font-weight: 800;
         line-height: 1;
         margin-top: 0.1rem;
       }
       .cfg-step-num {
-        width: 1rem;
-        height: 1rem;
-        min-width: 1rem;
+        width: 1.15rem;
+        height: 1.15rem;
+        min-width: 1.15rem;
         border-radius: 999px;
-        border: 1px solid #ddd6fe;
-        color: #6d28d9;
+        border: 1px solid #c4b5fd;
+        color: #5b21b6;
         background: #f5f3ff;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        font-size: 0.62rem;
+        font-size: 0.64rem;
+        font-weight: 800;
         margin-top: 0.08rem;
       }
       .cfg-title {
         margin: 0;
-        color: #111827;
+        color: #1e1b2e;
         font-weight: 700;
-        font-size: 0.88rem;
+        font-size: 0.9rem;
         line-height: 1.35;
       }
       .cfg-desc {
         margin: 0.15rem 0 0 0;
-        color: #6b7280;
-        font-size: 0.77rem;
-        line-height: 1.45;
+        color: #4b5563;
+        font-size: 0.8rem;
+        line-height: 1.5;
       }
+      .cfg-desc strong { color: #1e1b2e; }
       .cfg-chip {
-        background: #f3f4f6;
-        border: 1px solid #e5e7eb;
-        color: #374151;
+        background: #faf7ff;
+        border: 1px solid #ddd6fe;
+        color: #5b21b6;
         border-radius: 6px;
-        padding: 0.06rem 0.32rem;
+        padding: 0.05rem 0.35rem;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        font-size: 0.7rem;
+        font-size: 0.68rem;
+        font-weight: 500;
       }
       .cfg-note {
-        color: #9ca3af;
-        font-size: 0.74rem;
-        margin-top: 0.2rem;
+        color: #6b7280;
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
         text-align: center;
+        line-height: 1.45;
       }
       .cfg-chevron {
         color: #9ca3af;
@@ -1396,293 +1420,104 @@ def _render_configuration_getting_started() -> None:
 
 
 def _apply_configuration_ui_redesign_styles() -> None:
-    """Configuration page visual polish (no behavior changes)."""
+    """Configuration-only tweaks on top of :func:`apply_dashboard_theme` + :func:`apply_tenant_page_shell` (no nav overrides)."""
     st.markdown(
         """
         <style>
-          [data-testid="stSidebar"] h1,
-          [data-testid="stSidebar"] h2,
-          [data-testid="stSidebar"] h3 {
-            margin-bottom: 0.35rem !important;
-            color: #e5efff !important;
+          :root { --sqg-accent: #7c3aed; --sqg-ink: #1e1b2e; }
+          /* Readable defaults on dark sidebar (same as apply_dashboard_theme nav) */
+          [data-testid="stSidebar"] [data-testid="stVerticalBlock"] p,
+          [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+          [data-testid="stSidebar"] [data-testid="stMarkdown"] p { color: #e2e8f0 !important; -webkit-text-fill-color: #e2e8f0 !important; }
+          [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p,
+          [data-testid="stSidebar"] [data-testid="stCaption"] p,
+          [data-testid="stSidebar"] [data-testid="stCaption"] { color: #9ca3af !important; -webkit-text-fill-color: #9ca3af !important; }
+          [data-testid="stSidebar"] [data-baseweb="slider"] + div [data-testid="stWidgetLabel"] p,
+          [data-testid="stSidebar"] [data-baseweb="select"] + div p { color: #d1d5db !important; }
+          /* Context chips in dark sidebar (Tenant Dashboard family) */
+          .cfg-sb-project-row { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.2rem 0 0.6rem 0; }
+          .cfg-sb-chip {
+            background: rgba(255, 255, 255, 0.1) !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(255, 255, 255, 0.16) !important;
+            border-radius: 8px;
+            padding: 0.14rem 0.45rem;
+            font-size: 0.72rem;
+            line-height: 1.3;
+            font-weight: 600;
           }
-          [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
-            color: #9bb0cf !important;
+          .cfg-sb-sec {
+            margin: 0.75rem 0 0.4rem 0;
+            color: #c4b5fd !important;
+            -webkit-text-fill-color: #c4b5fd !important;
+            font-size: 0.6rem !important;
+            letter-spacing: 0.1em !important;
+            text-transform: uppercase !important;
+            font-weight: 700 !important;
           }
           [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
           [data-testid="stSidebar"] [data-testid="stWidgetLabel"] label,
-          [data-testid="stSidebar"] label {
-            color: #dce9ff !important;
-            opacity: 1 !important;
-            font-weight: 600 !important;
-          }
-          .cfg-sb-project-row {
-            display: flex;
-            gap: 0.35rem;
-            flex-wrap: wrap;
-            margin: 0.3rem 0 0.55rem 0;
-          }
-          .cfg-sb-chip {
-            background: #142844;
-            color: #e7f0ff;
-            border: 1px solid #3a5f91;
-            border-radius: 6px;
-            padding: 0.12rem 0.36rem;
-            font-size: 0.72rem;
-            line-height: 1.3;
-          }
-          .cfg-sb-sec {
-            margin: 0.8rem 0 0.35rem 0;
-            color: #8ea2c2;
-            font-size: 0.67rem;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            font-weight: 700;
+          [data-testid="stSidebar"] [data-baseweb="radio"] label p {
+            color: #e2e8f0 !important;
+            -webkit-text-fill-color: #e2e8f0 !important;
+            font-size: 0.84rem !important;
+            font-weight: 500 !important;
           }
           [data-testid="stSidebar"] [data-baseweb="input"],
           [data-testid="stSidebar"] [data-baseweb="select"] {
-            background: #0f172a !important;
-            border: 1px solid #334155 !important;
+            background: rgba(255, 255, 255, 0.05) !important;
+            border: 1px solid rgba(255, 255, 255, 0.12) !important;
             border-radius: 8px !important;
-          }
-          [data-testid="stSidebar"] [data-baseweb="base-input"] {
-            background: #0f172a !important;
-          }
-          [data-testid="stSidebar"] [data-baseweb="input"] input,
-          [data-testid="stSidebar"] [data-baseweb="select"] input {
-            background: #0f172a !important;
           }
           [data-testid="stSidebar"] [data-baseweb="input"] input,
           [data-testid="stSidebar"] [data-baseweb="select"] input,
           [data-testid="stSidebar"] [data-baseweb="base-input"] {
             color: #f1f5f9 !important;
             -webkit-text-fill-color: #f1f5f9 !important;
-            caret-color: #f1f5f9 !important;
           }
-          [data-testid="stSidebar"] input:-webkit-autofill,
-          [data-testid="stSidebar"] input:-webkit-autofill:hover,
-          [data-testid="stSidebar"] input:-webkit-autofill:focus,
-          [data-testid="stSidebar"] textarea:-webkit-autofill,
-          [data-testid="stSidebar"] select:-webkit-autofill {
-            -webkit-text-fill-color: #f1f5f9 !important;
-            transition: background-color 5000s ease-in-out 0s;
-            box-shadow: 0 0 0px 1000px #0f172a inset !important;
-          }
-          [data-testid="stSidebar"] [data-baseweb="input"] input::placeholder,
-          [data-testid="stSidebar"] [data-baseweb="select"] input::placeholder {
-            color: #64748b !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stRadio"] label p {
-            color: #d6e4ff !important;
-            font-size: 0.8rem !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a {
-            background: linear-gradient(90deg, #1f3a60, #223a58) !important;
-            border: 1px solid #335c87 !important;
-            border-radius: 8px !important;
-            padding: 0.4rem 0.5rem !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a *,
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-            color: #e5efff !important;
-            fill: #e5efff !important;
-            opacity: 1 !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"]:nth-of-type(1) a,
-          [data-testid="stSidebar"] [data-testid="stPageLink"]:nth-of-type(2) a {
-            background: linear-gradient(90deg, #244b7b, #1e3f66) !important;
-            border-color: #3f73ac !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {
-            background: linear-gradient(90deg, #3b82f6, #2563eb) !important;
-            border: 1px solid #1d4ed8 !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] *,
-          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p,
-          [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] span {
-            color: #dbeafe !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
-            background: #0f172a !important;
-            border: 1px solid #334155 !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] *,
-          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] p,
-          [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] span {
-            color: #e2e8f0 !important;
-          }
-          /* Upload schema tab controls */
+          [data-testid="stSidebar"] [data-baseweb="slider"] p,
+          [data-testid="stSidebar"] [data-baseweb="switch"] p,
+          [data-testid="stSidebar"] [data-baseweb="switch"] label,
+          [data-testid="stSidebar"] [data-baseweb="switch"] span { color: #e2e8f0 !important; }
+          [data-testid="stSidebar"] [data-baseweb="radio"] label,
+          [data-testid="stSidebar"] [data-baseweb="radio"] label span { color: #e2e8f0 !important; }
           [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
-            background: #0f172a !important;
-            border: 1px dashed #33527a !important;
+            background: rgba(255, 255, 255, 0.04) !important;
+            border: 1px dashed rgba(255, 255, 255, 0.22) !important;
             border-radius: 10px !important;
           }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {
-            color: #c9ddfb !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] [data-testid="stMarkdownContainer"] small,
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] [data-testid="stCaptionContainer"] {
-            color: #92add2 !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {
-            background: linear-gradient(90deg, #1d4ed8, #2563eb) !important;
-            border: 1px solid #1e40af !important;
-            color: #ffffff !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button * {
-            color: #ffffff !important;
-            fill: #ffffff !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {
-            color: #dbeafe !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDeleteBtn"] button {
-            background: #7f1d1d !important;
-            border: 1px solid #b91c1c !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stFileUploaderDeleteBtn"] button * {
-            color: #ffffff !important;
-            fill: #ffffff !important;
-          }
-          .cfg-main-title {
-            margin: 0;
-            color: #111827;
-            font-size: 2.05rem;
-            font-weight: 800;
-            letter-spacing: -0.01em;
-          }
-          .cfg-main-subtitle {
-            margin: 0.2rem 0 0.8rem 0;
-            color: #6b7280;
-            font-size: 0.92rem;
-          }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * { color: #d1d5db !important; }
+          [data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] { color: #e2e8f0 !important; }
+          /* Main: user row chip — white card, purple accent (matches project cards) */
           .cfg-user-chip-main {
-            display: inline-flex;
-            align-items: center;
-            justify-content: flex-start;
-            gap: 0.38rem;
-            padding: 0 0.55rem;
-            border-radius: 8px;
-            border: 1px solid #325d92;
-            background: linear-gradient(90deg, #1e3a5f, #253d63);
-            color: #ecf3ff;
-            font-size: 0.78rem;
-            font-weight: 700;
-            margin: 0;
-            width: 100%;
-            height: 2.25rem;
-            box-sizing: border-box;
+            display: inline-flex; align-items: center; justify-content: flex-start; gap: 0.4rem;
+            padding: 0 0.65rem; height: 2.3rem; width: 100%; box-sizing: border-box;
+            border-radius: 10px; border: 1px solid #e5e7eb;
+            border-left: 3px solid var(--sqg-accent) !important;
+            background: #ffffff !important;
+            color: var(--sqg-ink) !important;
+            font-size: 0.8rem; font-weight: 600; margin: 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
           }
           .cfg-user-chip-ico {
-            width: 1.35rem;
-            height: 1.35rem;
-            border-radius: 999px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            background: rgba(59, 130, 246, 0.28);
-            border: 1px solid rgba(191, 219, 254, 0.45);
-            color: #f8fbff;
-            font-size: 0.72rem;
-            font-weight: 800;
-            line-height: 1;
-            flex-shrink: 0;
+            width: 1.4rem; height: 1.4rem; border-radius: 999px; flex-shrink: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: #ede9fe !important; color: #6d28d9 !important;
+            font-size: 0.72rem; font-weight: 800; line-height: 1; border: 1px solid #ddd6fe;
           }
-          .cfg-user-chip-name {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-          }
-          .cfg-user-actions {
-            max-width: 220px;
-            margin-left: auto;
-          }
+          .cfg-user-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .cfg-user-actions { max-width: 220px; margin-left: auto; }
           .cfg-user-actions [data-testid="stButton"] { margin: 0 !important; }
           .cfg-user-actions [data-testid="stButton"] button {
-            height: 2.25rem !important;
-            min-height: 2.25rem !important;
-            box-sizing: border-box !important;
-          }
-          section.main [data-testid="stButton"] button[kind="secondary"] {
-            background: #7f1d1d !important;
-            border: 1px solid #b91c1c !important;
-            color: #fff !important;
-          }
-          section.main [data-testid="stButton"] button[kind="secondary"] * {
-            color: #fff !important;
-            fill: #fff !important;
-          }
-          section.main [data-testid="stAlert"] {
+            height: 2.3rem !important; min-height: 2.3rem !important; box-sizing: border-box !important;
             border-radius: 8px !important;
-            border-width: 1px !important;
           }
-          section.main [data-testid="stAlert"][kind="warning"] {
-            background: #fffbeb !important;
-            border-color: #fde68a !important;
-          }
-          section.main [data-testid="stAlert"][kind="warning"] * {
-            color: #b45309 !important;
-          }
-          section.main [data-testid="stAlert"][kind="info"] {
-            background: #eff6ff !important;
-            border-color: #bfdbfe !important;
-          }
-          section.main [data-testid="stAlert"][kind="info"] * {
-            color: #1e3a8a !important;
-          }
-          /* Main content panel (right side) to match light screenshot */
-          section.main {
-            background: #f3f4f6 !important;
-          }
-          section.main > div.block-container {
-            background: #ffffff !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 12px !important;
-            padding: 1.05rem 1.25rem 1.25rem !important;
-            margin-top: 0.65rem !important;
-          }
-          /* Main-panel helper text (captions / hints) — keep dark on white */
-          section.main [data-testid="stCaptionContainer"] p,
-          section.main [data-testid="stCaption"] {
-            color: #334155 !important;
-            -webkit-text-fill-color: #334155 !important;
-            opacity: 1 !important;
-          }
-          section.main [data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] p,
-          section.main [data-testid="stFileUploader"] [data-testid="stCaptionContainer"] p,
-          section.main [data-testid="stFileUploader"] small {
-            color: #334155 !important;
-            -webkit-text-fill-color: #334155 !important;
-          }
-          section.main [data-testid="stProgressBar"] > div > div {
-            background: #8b5cf6 !important;
-          }
-          section.main [data-testid="stProgressBar"] {
-            background: #e5e7eb !important;
-          }
-          /* Expander labels (SSH tunnel, etc.) — default Streamlit grey is too light on white */
+          section.main [data-testid="stProgressBar"] > div > div { background: var(--sqg-accent) !important; }
+          section.main [data-testid="stProgressBar"] { background: #e5e7eb !important; border-radius: 6px !important; }
           section.main [data-testid="stExpander"] details > summary,
-          section.main [data-testid="stExpander"] summary {
-            color: #0f172a !important;
-            -webkit-text-fill-color: #0f172a !important;
-            font-weight: 600 !important;
-            opacity: 1 !important;
-          }
-          section.main [data-testid="stExpander"] summary *,
-          section.main [data-testid="stExpander"] summary p,
-          section.main [data-testid="stExpander"] summary span,
-          section.main [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p {
-            color: #0f172a !important;
-            -webkit-text-fill-color: #0f172a !important;
-            font-weight: 600 !important;
-            opacity: 1 !important;
-          }
-          section.main [data-testid="stExpander"] button p,
-          section.main [data-testid="stExpander"] button span,
-          section.main [data-testid="stExpander"] [role="button"] {
-            color: #0f172a !important;
-            -webkit-text-fill-color: #0f172a !important;
+          section.main [data-testid="stExpander"] summary,
+          section.main [data-testid="stExpander"] summary p {
+            color: var(--sqg-ink) !important; font-weight: 600 !important;
           }
         </style>
         """,
@@ -1693,151 +1528,33 @@ def _apply_configuration_ui_redesign_styles() -> None:
 def _render_no_active_project_state(page_name: str = "chat") -> None:
     """Styled empty state when no project is selected (Chat / Configuration)."""
     page = (page_name or "chat").strip().lower()
-    action_text = "starting chat sessions" if page == "chat" else "opening configuration"
+    _render_workbench_sidebar_shell("signout_wb_no_project")
+
+    page_title = "Chat" if page == "chat" else "Configuration"
     followup_text = (
-        "Once selected, you can connect your database and ask questions in natural language."
+        "Open a project from the dashboard to start asking questions in natural language."
         if page == "chat"
-        else "Once selected, you can connect your database, activate schema, and continue setup."
+        else "Open a project from the dashboard to configure your data source and activate schema."
     )
 
+    st.markdown(f'<div class="sqg-dash-title"><h1>{page_title}</h1></div>', unsafe_allow_html=True)
     st.markdown(
-        """
-        <style>
-          [data-testid="stSidebarUserContent"] {
-            display: flex;
-            flex-direction: column;
-            min-height: calc(100vh - 4rem);
-          }
-          .np-sb-bottom { margin-top: auto; }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a {
-            color: #e2e8f0 !important;
-            background: #172038 !important;
-            border: 1px solid #2a3a5e !important;
-            border-radius: 8px !important;
-            padding: 0.45rem 0.55rem !important;
-            text-decoration: none !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a *,
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a p,
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a span {
-            color: #e2e8f0 !important;
-            fill: #e2e8f0 !important;
-            opacity: 1 !important;
-          }
-          [data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
-            border-color: #3f5480 !important;
-            background: #1b2642 !important;
-          }
-        </style>
-        """,
+        '<p class="sqg-dash-sub">Project context is required before continuing.</p>',
         unsafe_allow_html=True,
     )
-    with st.sidebar:
-        st.page_link("pages/dashboard.py", label="Back to dashboard", icon="🏠")
-        st.markdown(
-            """
-            <div class="np-sb-bottom">
-              <p style="margin:0 0 .35rem 0;color:#8ea2c2;font-size:.74rem;text-transform:uppercase;letter-spacing:.08em;">Recent activity</p>
-              <p style="margin:0;color:#97aac7;font-size:.82rem;">• Waiting for project…</p>
-              <p style="margin:.25rem 0 0 0;color:#97aac7;font-size:.82rem;">• Security: OK</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    _no_project_html = """
-        <style>
-          .np-wrap {
-            position: relative;
-            min-height: 78vh;
-            border-radius: 14px;
-            overflow: hidden;
-            border: 1px solid #17263d;
-            background:
-              linear-gradient(180deg, rgba(8,17,32,0.96) 0%, rgba(7,14,28,0.96) 100%);
-          }
-          .np-wrap::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            background-image:
-              linear-gradient(rgba(53,88,135,0.14) 1px, transparent 1px),
-              linear-gradient(90deg, rgba(53,88,135,0.14) 1px, transparent 1px);
-            background-size: 36px 36px;
-            opacity: 0.42;
-            pointer-events: none;
-          }
-          .np-center {
-            position: relative;
-            z-index: 1;
-            min-height: 78vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 1.5rem;
-            text-align: center;
-          }
-          .np-card { max-width: 560px; }
-          .np-icon {
-            width: 64px;
-            height: 64px;
-            border-radius: 14px;
-            margin: 0 auto 0.9rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.35rem;
-            color: #fca5a5;
-            background: rgba(127, 29, 29, 0.24);
-            border: 1px solid rgba(248, 113, 113, 0.35);
-            box-shadow: 0 10px 26px rgba(0,0,0,0.35);
-          }
-          .np-title {
-            margin: 0;
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #f8fafc;
-            letter-spacing: -0.01em;
-          }
-          .np-sub {
-            margin: 0.6rem auto 1rem;
-            max-width: 520px;
-            color: #9fb3d1;
-            line-height: 1.5;
-            font-size: 0.95rem;
-          }
-          .np-btn-wrap { margin-top: 1rem; }
-          .np-action-row { margin-top: 1.25rem; }
-        </style>
-        <div class="np-wrap">
-          <div class="np-center">
-            <div class="np-card">
-              <div class="np-icon">!</div>
-              <h2 class="np-title">No active project</h2>
-              <p class="np-sub">
-                Open or create a project from the dashboard before __ACTION_TEXT__.
-                __FOLLOWUP_TEXT__
-              </p>
-              <div class="np-btn-wrap"></div>
-            </div>
-          </div>
-        </div>
-        """
     st.markdown(
-        _no_project_html.replace("__ACTION_TEXT__", action_text).replace(
-            "__FOLLOWUP_TEXT__", followup_text
+        (
+            '<div class="sqg-dash-info">'
+            '<b>No active project selected.</b> '
+            f"{followup_text}"
+            "</div>"
         ),
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="np-action-row"></div>', unsafe_allow_html=True)
-    _, c1, _ = st.columns([2, 1.4, 2])
-    with c1:
-        if st.button(
-            "Go to dashboard",
-            key="np_go_dashboard",
-            type="primary",
-            use_container_width=True,
-        ):
+
+    _l, _c, _r = st.columns([1.8, 1.4, 1.8])
+    with _c:
+        if st.button("Go to dashboard", key="np_go_dashboard", type="primary", use_container_width=True):
             st.switch_page("pages/dashboard.py")
 
 
@@ -2273,11 +1990,8 @@ def run() -> None:
     if not st.session_state.auth_user:
         st.switch_page("pages/signin.py")
         st.stop()
-    if workbench_page() == "chat":
-        apply_shared_theme()
-        apply_chat_page_theme()
-    else:
-        apply_dashboard_theme()
+    # Chat: `apply_dashboard_theme` + `apply_tenant_page_shell` + `apply_chat_page_theme` in `project_chat.py`
+    # Configuration: `apply_dashboard_theme` + `apply_tenant_page_shell` in `project_configuration.py`
 
     # ── Session (per project / FastAPI session_id) ─────────────────────────────
     apply_project_workspace(ensure_tenant_state)
@@ -2378,13 +2092,8 @@ def run() -> None:
     # ── Sidebar: Chat only — navigation + account + clear (no connection / schema / query defaults) ─
     if workbench_page() == "chat":
         with st.sidebar:
-            st.markdown(
-                '<div class="sqg-chat-brand-line">NL → SQL</div>'
-                '<p class="sqg-chat-sub">natural language query</p>',
-                unsafe_allow_html=True,
-            )
-            st.subheader("Query options")
-            st.divider()
+            _render_workbench_sidebar_brand_and_links()
+            st.markdown('<p class="sqg-chat-sec" style="margin-top:0.35rem;">Query options</p>', unsafe_allow_html=True)
             st.caption("Session — tables (top-K) and row preview")
             st.session_state.top_k = st.slider(
                 "Tables to retrieve (top-K)", 1, 10, int(st.session_state.top_k or 3), key="ch_topk"
@@ -2408,9 +2117,6 @@ def run() -> None:
                 '<div class="sqg-chat-ctx">' + "".join(_ch_html) + "</div>",
                 unsafe_allow_html=True,
             )
-            st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
-            st.page_link("pages/project_chat.py", label="Chat", icon="💬")
-            st.page_link("pages/dashboard.py", label="Go to Dashboard", icon="🏠")
             st.markdown("<p class='sqg-chat-sec'>Connection</p>", unsafe_allow_html=True)
             _is_conn = bool(st.session_state.get("pg_session_connected"))
             st.caption("Connected" if _is_conn else "Not connected")
@@ -2464,13 +2170,13 @@ def run() -> None:
             st.markdown(
                 f'<div class="sqg-sb-foot">'
                 f'<div class="sqg-sb-foot-row">'
-                f'<span class="sqg-sb-av" style="background:#4d77ff;">{_initial}</span>'
+                f'<span class="sqg-sb-av">{_initial}</span>'
                 f'<span class="sqg-sb-foot-text"><span class="sqg-sb-name">{_u}</span>'
-                f'<span class="sqg-sb-role">Administrator</span></span></div></div>',
+                f'<span class="sqg-sb-role">Member</span></span></div></div>',
                 unsafe_allow_html=True,
             )
-            if st.button("Log out", use_container_width=True, key="signout_chat", type="primary"):
-                st.session_state.auth_user = None
+            if st.button("Sign out", use_container_width=True, key="signout_chat", type="secondary"):
+                clear_auth_session()
                 st.switch_page("pages/signin.py")
                 st.stop()
             st.caption("Clears only this chat thread. Active schema/session stays connected.")
@@ -2566,13 +2272,13 @@ def run() -> None:
     if workbench_page() == "configuration":
         _apply_configuration_ui_redesign_styles()
         with st.sidebar:
+            _render_workbench_sidebar_brand_and_links()
             _p = find_project_by_id(get_active_project_id() or "")
             _pname = (_p or {}).get("name") or "—"
             _pcc = (str(((_p or {}).get("client_code") or ""))).strip()
             _comp = get_tenant_by_id((_p or {}).get("tenant_id") or "")
             _cn = (_comp or {}).get("name") or ""
 
-            st.markdown("### NL → SQL")
             st.caption("Project context")
             st.markdown(
                 (
@@ -2584,10 +2290,6 @@ def run() -> None:
                 ),
                 unsafe_allow_html=True,
             )
-            st.page_link("pages/dashboard.py", label="Go to dashboard", icon="🏠")
-            st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧")
-            st.page_link("pages/project_chat.py", label="Chat", icon="💬")
-            st.divider()
 
             st.markdown('<p class="cfg-sb-sec">Database connection</p>', unsafe_allow_html=True)
             # Apply pending source/mode switches BEFORE creating radio widgets
@@ -2642,6 +2344,11 @@ def run() -> None:
                     "Queries use LIMIT + OFFSET for pagination."
                 ),
             )
+            st.divider()
+            if st.button("Sign out", use_container_width=True, type="secondary", key="signout_cfg_sb"):
+                clear_auth_session()
+                st.switch_page("pages/signin.py")
+                st.stop()
 
     # ── Main area ─────────────────────────────────────────────────────────────────
     if workbench_page() == "configuration":
@@ -2649,9 +2356,9 @@ def run() -> None:
         _cfg_initial = (_cfg_user[:1] if isinstance(_cfg_user, str) and _cfg_user else "U").upper()
         _cfg_l, _cfg_r = st.columns([7.0, 2.0], gap="small")
         with _cfg_l:
-            st.markdown('<h1 class="cfg-main-title">Configuration</h1>', unsafe_allow_html=True)
+            st.markdown('<div class="sqg-dash-title"><h1>Configuration</h1></div>', unsafe_allow_html=True)
             st.markdown(
-                '<p class="cfg-main-subtitle">Choose <strong>Source</strong> in the left sidebar, then work through the steps in this panel.</p>',
+                '<p class="sqg-dash-sub">Choose <strong>Source</strong> in the left sidebar, then work through the steps in this panel.</p>',
                 unsafe_allow_html=True,
             )
         with _cfg_r:
@@ -2752,8 +2459,8 @@ def run() -> None:
         st.markdown(
             (
                 f'<div class="sqg-chat-hero-brief">'
-                f'<h1 class="sqg-chat-head">Chat</h1>'
-                f'<p class="sqg-chat-headline">{html.escape(_hdr_db)} · {_hdr_tc} tables active</p>'
+                f'<div class="sqg-dash-title"><h1>Chat</h1></div>'
+                f'<p class="sqg-dash-sub">{html.escape(_hdr_db)} · {_hdr_tc} tables active</p>'
                 f"</div>"
             ),
             unsafe_allow_html=True,

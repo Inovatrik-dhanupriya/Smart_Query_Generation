@@ -16,7 +16,14 @@ from ensure_path import install
 install()
 
 from ui.auth.session import clear_auth_session, restore_auth_session
-from ui.theme import apply_dashboard_theme
+from ui.sidebar_icons import (
+    SIDEBAR_CHAT,
+    SIDEBAR_COMPANIES,
+    SIDEBAR_CONFIGURATION,
+    SIDEBAR_OPEN_PROJECT,
+    SIDEBAR_PROJECTS,
+)
+from ui.theme import apply_dashboard_theme, apply_tenant_page_shell
 from ui.tenant.state import (
     create_tenant,
     ensure_tenant_state,
@@ -24,40 +31,8 @@ from ui.tenant.state import (
 
 st.set_page_config(page_title="Companies", page_icon="🏬", layout="wide")
 apply_dashboard_theme()
+apply_tenant_page_shell()
 ensure_tenant_state()
-
-# Tenants page readability override: force white text on dark surface.
-st.markdown(
-    """
-    <style>
-    section.main,
-    section.main p,
-    section.main span,
-    section.main label,
-    section.main li,
-    section.main [data-testid="stMarkdownContainer"],
-    section.main [data-testid="stMarkdownContainer"] p,
-    section.main [data-testid="stCaption"],
-    section.main [data-baseweb="button"] *,
-    section.main button * {
-        color: #ffffff !important;
-    }
-    section.main [data-baseweb="input"] input,
-    section.main [data-baseweb="input"] textarea {
-        color: #000000 !important;
-        -webkit-text-fill-color: #000000 !important;
-        caret-color: #000000 !important;
-    }
-    section.main [data-baseweb="button"][kind="secondary"],
-    section.main [data-testid="stBaseButton-secondary"],
-    section.main [data-baseweb="button"][kind="primary"],
-    section.main [data-testid="stBaseButton-primary"] {
-        color: #ffffff !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 if not restore_auth_session():
     st.switch_page("pages/signin.py")
@@ -72,7 +47,7 @@ _role = "Member"
 with st.sidebar:
     st.markdown(
         f"""
-        <div class="sqg-sb-head">
+        <div class="sqg-sb-top" style="display:flex;align-items:center;gap:0.5rem">
           <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
             <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
               <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
@@ -93,12 +68,12 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.caption("WORKSPACE")
-    st.page_link("pages/dashboard.py", label="Projects", icon="🗃️", help=None)
-    st.page_link("pages/tenants.py", label="Companies", icon="🏬", help=None)
-    st.page_link("pages/project_open.py", label="Open project", icon="📂", help=None)
-    st.page_link("pages/project_chat.py", label="Chat", icon="💬", help=None)
+    st.page_link("pages/dashboard.py", label="Projects", icon=SIDEBAR_PROJECTS, help=None)
+    st.page_link("pages/tenants.py", label="Companies", icon=SIDEBAR_COMPANIES, help=None)
+    st.page_link("pages/project_open.py", label="Open project", icon=SIDEBAR_OPEN_PROJECT, help=None)
+    st.page_link("pages/project_chat.py", label="Chat", icon=SIDEBAR_CHAT, help=None)
     st.caption("SETTINGS")
-    st.page_link("pages/project_configuration.py", label="Configuration", icon="🔧", help=None)
+    st.page_link("pages/project_configuration.py", label="Configuration", icon=SIDEBAR_CONFIGURATION, help=None)
     st.divider()
     st.markdown('<div class="sqg-sb-gutter" aria-hidden="true"></div>', unsafe_allow_html=True)
     if st.button("Sign out", use_container_width=True, type="secondary", key="tenants_sign_out"):
@@ -114,18 +89,16 @@ st.markdown(
 st.markdown(
     """
     <div class="sqg-dash-info" role="note">
-      <div class="sqg-dash-info-ico">ℹ️</div>
+      <div class="sqg-dash-info-ico" aria-hidden="true">i</div>
       <div>Use companies to keep project organization clean. On the Projects page, filter workspaces by company.</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-st.markdown("<div class='sqg-dash-proj'>", unsafe_allow_html=True)
 with st.form("new_tenant"):
     t_name = st.text_input("Company name", placeholder="e.g. Acme Corp")
     add = st.form_submit_button("Add company", use_container_width=True, type="primary")
-st.markdown("</div>", unsafe_allow_html=True)
 
 if add:
     if not (t_name or "").strip():
