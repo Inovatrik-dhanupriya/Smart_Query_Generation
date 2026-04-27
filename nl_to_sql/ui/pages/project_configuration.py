@@ -20,5 +20,8 @@ from ui.theme import apply_dashboard_theme, apply_tenant_page_shell
 st.set_page_config(page_title="Configuration", page_icon="🔧", layout="wide")
 apply_dashboard_theme()
 apply_tenant_page_shell()
+
+
+
 nl_workbench.set_workbench_page("configuration")
 nl_workbench.run()
