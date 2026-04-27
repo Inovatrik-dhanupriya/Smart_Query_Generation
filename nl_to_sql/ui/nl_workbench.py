@@ -1283,121 +1283,255 @@ def _render_configuration_connection_main(sid: str) -> None:
                 st.session_state.schema_upload_need_connection_help = False
                 st.rerun()
     else:
-        _left_cfg, _right_cfg = st.columns(2, gap="large")
-        with _left_cfg:
-            _src = _render_cfg_source_selector()
-            _apply_cfg_source_selection(_src)
-            if _src == "Server connection":
+        # Layout tightening: the configuration page already adds header + status + divider.
+        # Pull this section up slightly to avoid the large "blank" band above Connection Type.
+        st.markdown(
+            """
+            <style>
+              /* Only affects this second-page block (scoped by anchor class). */
+              .cfg-conn-main-anchor { margin-top: -1.05rem; }
+              .cfg-conn-main-anchor + div p.cfg-source-card-title { margin-top: 0.0rem !important; margin-bottom: 0.35rem !important; }
+            </style>
+            <div class="cfg-conn-main-anchor"></div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── Frontend validation errors (dismissible) ────────────────────────────
+        st.session_state.setdefault("cfg_form_error", "")
+        _err_slot = st.empty()
+
+        def _render_cfg_form_error() -> None:
+            msg = (st.session_state.get("cfg_form_error") or "").strip()
+            if not msg:
+                _err_slot.empty()
+                return
+            with _err_slot.container():
                 st.markdown(
-                    "<p class='cfg-source-card-title' style='margin-top:0.7rem !important'>Server mode</p>",
+                    """
+                    <style>
+                      .cfg-form-alert {
+                        background: #fef2f2;
+                        border: 1px solid #fecaca;
+                        border-left: 4px solid #ef4444;
+                        border-radius: 10px;
+                        padding: 0.6rem 0.75rem;
+                        color: #991b1b;
+                        font-weight: 600;
+                        line-height: 1.35;
+                        min-height: 2.35rem;
+                        display: flex;
+                        align-items: center;
+                      }
+                      .st-key-dismiss_cfg_form_error { margin-top: 0.05rem !important; }
+                      .st-key-dismiss_cfg_form_error [data-baseweb="button"] {
+                        height: 2.35rem !important;
+                        min-height: 2.35rem !important;
+                        width: 2.35rem !important;
+                        border-radius: 10px !important;
+                        border: 1px solid #fecaca !important;
+                        background: #fff1f2 !important;
+                        padding: 0 !important;
+                      }
+                      .st-key-dismiss_cfg_form_error [data-baseweb="button"]:hover {
+                        background: #ffe4e6 !important;
+                        border-color: #fca5a5 !important;
+                      }
+                    </style>
+                    """,
                     unsafe_allow_html=True,
                 )
-                st.caption(
-                    "Set **PostgreSQL** first, then **SSH** directly underneath on the right — "
-                    "then use **Connect to server** (same order as a typical SQL client with a jump host)."
-                )
-            else:
-                st.session_state.conn_use_ssh = False
-        with _right_cfg:
-            if _src == "Remote URL connection":
-                st.markdown(
-                    "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Remote URL Connection</p>",
-                    unsafe_allow_html=True,
-                )
-                st.caption("Paste your remote SQL API endpoint. The app will fetch database, schema, table list and counts.")
-                st.text_input(
+                e1, e2 = st.columns([20, 1], gap="small", vertical_alignment="center")
+                with e1:
+                    st.markdown(
+                        f"<div class='cfg-form-alert'>{html.escape(msg)}</div>",
+                        unsafe_allow_html=True,
+                    )
+                with e2:
+                    if st.button("✕", key="dismiss_cfg_form_error", help="Dismiss"):
+                        st.session_state["cfg_form_error"] = ""
+                        st.rerun()
+
+        def _fail(msg: str) -> None:
+            # Do not rerun for validation errors.
+            st.session_state["cfg_form_error"] = msg
+
+        # Connection Type (top) + full-width form below.
+        # Keep the same `cfg_schema_source` key and change handler.
+        _cfg_opts = _cfg_source_options()
+        if st.session_state.get("cfg_schema_source") not in _cfg_opts:
+            st.session_state["cfg_schema_source"] = _cfg_opts[0]
+        st.markdown(
+            "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Connection Type</p>",
+            unsafe_allow_html=True,
+        )
+        # Horizontal segmented selector (matches instruction-page style; preserves cfg_schema_source key).
+        _current = st.session_state.get("cfg_schema_source") or _cfg_opts[0]
+        _active_idx = _cfg_opts.index(_current) if _current in _cfg_opts else 0
+        _style_block = """
+        <style>
+        section.main .st-key-cfg_source_btn_0 [data-baseweb="button"],
+        section.main .st-key-cfg_source_btn_1 [data-baseweb="button"],
+        section.main .st-key-cfg_source_btn_2 [data-baseweb="button"] {
+            width: 100% !important;
+            border: 1.5px solid #e5e7eb !important;
+            background: #ffffff !important;
+            border-radius: 999px !important;
+            box-shadow: 0 1px 8px rgba(0,0,0,0.04) !important;
+        }
+        section.main .st-key-cfg_source_btn_0 [data-baseweb="button"] p,
+        section.main .st-key-cfg_source_btn_1 [data-baseweb="button"] p,
+        section.main .st-key-cfg_source_btn_2 [data-baseweb="button"] p {
+            font-size: 0.88rem !important;
+            font-weight: 600 !important;
+            margin: 0 !important;
+            color: #374151 !important;
+            text-align: center !important;
+            width: 100% !important;
+        }
+        section.main .st-key-cfg_source_btn_0 [data-baseweb="button"]:hover,
+        section.main .st-key-cfg_source_btn_1 [data-baseweb="button"]:hover,
+        section.main .st-key-cfg_source_btn_2 [data-baseweb="button"]:hover {
+            border-color: #d1d5db !important;
+            background: #fafafa !important;
+        }
+        section.main .st-key-cfg_source_btn___ACTIVE__ [data-baseweb="button"] {
+            border: 1.5px solid #7c3aed !important;
+            background: #f5f3ff !important;
+        }
+        section.main .st-key-cfg_source_btn___ACTIVE__ [data-baseweb="button"] p {
+            color: #1f2937 !important;
+            font-weight: 700 !important;
+        }
+        </style>
+        """
+        st.markdown(_style_block.replace("__ACTIVE__", str(_active_idx)), unsafe_allow_html=True)
+        _c1, _c2, _c3 = st.columns(3, gap="small")
+        for _col, _ix, _opt in ((_c1, 0, _cfg_opts[0]), (_c2, 1, _cfg_opts[1]), (_c3, 2, _cfg_opts[2])):
+            with _col:
+                if st.button(_opt, key=f"cfg_source_btn_{_ix}", use_container_width=True, type="secondary"):
+                    if st.session_state.get("cfg_schema_source") != _opt:
+                        st.session_state["cfg_schema_source"] = _opt
+                        _on_configuration_source_changed()
+                    st.rerun()
+        _src = st.session_state.get("cfg_schema_source") or _cfg_opts[0]
+        _apply_cfg_source_selection(_src)
+
+        if _src == "Remote URL connection":
+            st.markdown(
+                "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Remote URL Connection</p>",
+                unsafe_allow_html=True,
+            )
+            st.caption("Paste your remote SQL API endpoint. The app will fetch database, schema, table list and counts.")
+            with st.form("remote_url_form", clear_on_submit=False):
+                remote_url = st.text_input(
                     "Remote SQL API URL",
                     key="remote_conn_url",
                     placeholder="https://api.example.com",
                 )
-                if st.button("Fetch remote metadata", type="primary", use_container_width=True, key="remote_fetch_metadata_btn"):
-                    _ru = (st.session_state.get("remote_conn_url") or "").strip()
-                    if not _ru:
-                        _cfg_notify("error", "Paste remote URL first.")
-                    else:
-                        try:
-                            _db_rows = _fetch_remote_rows(_ru, "SELECT current_database() AS database_name")
-                            _db_name = "remote_database"
-                            if _db_rows and isinstance(_db_rows[0], dict):
-                                _db_name = str(
-                                    _db_rows[0].get("database_name")
-                                    or _db_rows[0].get("current_database")
-                                    or list(_db_rows[0].values())[0]
-                                    or "remote_database"
-                                )
-                            _sch_rows = _fetch_remote_rows(
-                                _ru,
-                                "SELECT schema_name FROM information_schema.schemata "
-                                "WHERE schema_name NOT IN ('information_schema') "
-                                "AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name",
+                submitted_remote = st.form_submit_button(
+                    "Fetch remote metadata",
+                    type="primary",
+                    use_container_width=True,
+                )
+            if submitted_remote:
+                st.session_state["cfg_form_error"] = ""
+                _ru = (remote_url or "").strip()
+                if not _ru:
+                    _fail("Please enter Remote SQL API URL before fetching metadata.")
+                else:
+                    try:
+                        _db_rows = _fetch_remote_rows(_ru, "SELECT current_database() AS database_name")
+                        _db_name = "remote_database"
+                        if _db_rows and isinstance(_db_rows[0], dict):
+                            _db_name = str(
+                                _db_rows[0].get("database_name")
+                                or _db_rows[0].get("current_database")
+                                or list(_db_rows[0].values())[0]
+                                or "remote_database"
                             )
-                            _schemas = [
-                                str(r.get("schema_name") or r.get("schema") or "").strip()
-                                for r in _sch_rows
-                                if isinstance(r, dict)
-                            ]
-                            _schemas = [s for s in _schemas if s]
-                            st.session_state.remote_conn_db_list = [_db_name]
-                            st.session_state.remote_conn_schema_list = _schemas
-                            st.session_state.remote_conn_selected_db = _db_name
-                            st.session_state.remote_conn_selected_schema = _schemas[0] if _schemas else ""
-                            st.session_state.remote_conn_table_list = []
-                            st.session_state.remote_conn_selected_tables = []
-                            _cfg_notify("success", f"Remote metadata fetched: {len(_schemas)} schema(s).")
-                        except Exception as ex:
-                            _cfg_notify_error_with_help(str(ex), "Remote metadata fetch failed")
-            elif _src == "Server connection":
+                        _sch_rows = _fetch_remote_rows(
+                            _ru,
+                            "SELECT schema_name FROM information_schema.schemata "
+                            "WHERE schema_name NOT IN ('information_schema') "
+                            "AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name",
+                        )
+                        _schemas = [
+                            str(r.get("schema_name") or r.get("schema") or "").strip()
+                            for r in _sch_rows
+                            if isinstance(r, dict)
+                        ]
+                        _schemas = [s for s in _schemas if s]
+                        st.session_state.remote_conn_db_list = [_db_name]
+                        st.session_state.remote_conn_schema_list = _schemas
+                        st.session_state.remote_conn_selected_db = _db_name
+                        st.session_state.remote_conn_selected_schema = _schemas[0] if _schemas else ""
+                        st.session_state.remote_conn_table_list = []
+                        st.session_state.remote_conn_selected_tables = []
+                        _cfg_notify("success", f"Remote metadata fetched: {len(_schemas)} schema(s).")
+                        # Render toast immediately (avoid "second click" feel).
+                        _render_cfg_notifications()
+                    except Exception as ex:
+                        # Keep it clean: show only the real error, no troubleshooter for this step.
+                        _fail(f"Remote metadata fetch failed: {ex}")
+        elif _src == "Server connection":
+            with st.form("server_connection_form", clear_on_submit=False):
                 with st.container(border=True):
-                    st.caption("**1 · PostgreSQL** — where the server listens *after* you SSH in (often `127.0.0.1`).")
-                    st.caption("Use the **database account password** here. SSH is configured in step 2 below.")
+                    st.caption("**PostgreSQL** — where the server listens *after* you SSH in (often `127.0.0.1`).")
+                    st.caption("Use the **database account password** here. SSH is configured below.")
                     _hcol, _pcol = st.columns([4, 1], gap="small")
                     with _hcol:
-                        st.session_state.conn_host = st.text_input(
+                        host = st.text_input(
                             "Host",
-                            value=st.session_state.conn_host,
+                            value=st.session_state.get("conn_host") or "",
                             key="in_host",
                             placeholder="127.0.0.1",
                         )
                     with _pcol:
-                        st.session_state.conn_port = st.text_input(
+                        port = st.text_input(
                             "Port",
-                            value=st.session_state.conn_port or "5432",
+                            value=st.session_state.get("conn_port") or "5432",
                             key="in_port",
                             placeholder="5432",
                         )
-                    st.session_state.conn_user = st.text_input(
+                    username = st.text_input(
                         "Username",
-                        value=st.session_state.conn_user,
+                        value=st.session_state.get("conn_user") or "",
                         key="in_user",
                         placeholder="database user (e.g. cocreaduser)",
                     )
-                    st.session_state.conn_pass = st.text_input(
+                    password = st.text_input(
                         "Password",
                         type="password",
-                        value=st.session_state.conn_pass,
+                        value=st.session_state.get("conn_pass") or "",
                         key="in_pass",
                         placeholder="database password",
                     )
-                    st.session_state.file_db_name = st.text_input(
+                    dbname = st.text_input(
                         "Database name",
-                        value=st.session_state.file_db_name,
+                        value=st.session_state.get("file_db_name") or "",
                         key="cfg_dbname_main",
                         placeholder="e.g. medicine",
                     )
                 with st.container(border=True):
-                    st.caption("**2 · SSH jump host** — optional; use when you reach Postgres only through a bastion.")
+                    st.caption("**SSH jump host** — optional; use when you reach Postgres only through a bastion.")
                     st.caption(
                         "Auth is with a **private key** (PEM), not an SSH password. "
                         "Host/port here are the **bastion** (e.g. `10.100.0.2:22` as `ubuntu`)."
                     )
-                    st.checkbox("Connect through SSH tunnel", key="conn_use_ssh")
-                    if st.session_state.conn_use_ssh:
+                    use_ssh = st.checkbox("Connect through SSH tunnel", key="conn_use_ssh")
+                    ssh_host = ssh_port = ssh_user = ssh_key = ""
+                    if use_ssh:
                         _s1, _s2 = st.columns(2, gap="small")
                         with _s1:
-                            st.text_input("Bastion / server (IP or hostname)", key="conn_ssh_host", placeholder="e.g. 10.100.0.2")
+                            ssh_host = st.text_input(
+                                "Bastion / server (IP or hostname)",
+                                key="conn_ssh_host",
+                                placeholder="e.g. 10.100.0.2",
+                            )
                         with _s2:
-                            st.text_input("SSH port", key="conn_ssh_port", placeholder="22")
-                        st.text_input("SSH username", key="conn_ssh_user", placeholder="e.g. ubuntu")
+                            ssh_port = st.text_input("SSH port", key="conn_ssh_port", placeholder="22")
+                        ssh_user = st.text_input("SSH username", key="conn_ssh_user", placeholder="e.g. ubuntu")
                         st.caption("Upload a key file **or** paste in the box — an upload replaces the box.")
                         _f_srv = st.file_uploader(
                             "Private key file",
@@ -1406,42 +1540,134 @@ def _render_configuration_connection_main(sid: str) -> None:
                             help="e.g. id_rsa, id_ed25519, or a .pem. Must be UTF-8 text (standard PEM/OpenSSH).",
                         )
                         _apply_uploaded_ssh_key_to_session(_f_srv)
-                        st.text_area(
+                        ssh_key = st.text_area(
                             "SSH private key (PEM) — or paste",
                             height=120,
                             key="conn_ssh_key",
                             placeholder="-----BEGIN … PRIVATE KEY----- (paste full key)",
                         )
-                        st.text_input("Key passphrase (if your key is encrypted)", type="password", key="conn_ssh_key_pass")
-                if st.button("Connect to server", type="primary", use_container_width=True, key="btn_cfg_connect_server"):
+                        st.text_input(
+                            "Key passphrase (if your key is encrypted)",
+                            type="password",
+                            key="conn_ssh_key_pass",
+                        )
+                submitted_server = st.form_submit_button(
+                    "Connect to server",
+                    type="primary",
+                    use_container_width=True,
+                )
+            if submitted_server:
+                st.session_state["cfg_form_error"] = ""
+                missing: list[str] = []
+                if not (host or "").strip():
+                    missing.append("Host")
+                if not (port or "").strip():
+                    missing.append("Port")
+                if not (username or "").strip():
+                    missing.append("Username")
+                if not (password or "").strip():
+                    missing.append("Password")
+                if not (dbname or "").strip():
+                    missing.append("Database name")
+                # Server connection requires SSH tunnel.
+                if not st.session_state.get("conn_use_ssh"):
+                    missing.append("SSH tunnel (enable 'Connect through SSH tunnel')")
+                else:
+                    if not (ssh_host or "").strip():
+                        missing.append("SSH host")
+                    if not (ssh_port or "").strip():
+                        missing.append("SSH port")
+                    if not (ssh_user or "").strip():
+                        missing.append("SSH username")
+                    if not (ssh_key or "").strip():
+                        missing.append("SSH private key")
+                if missing:
+                    _fail("Please fill " + ", ".join(missing) + " before connecting.")
+                else:
+                    # Persist to session_state keys expected by _run_configuration_db_connect().
+                    st.session_state.conn_host = (host or "").strip()
+                    st.session_state.conn_port = (port or "").strip()
+                    st.session_state.conn_user = (username or "").strip()
+                    st.session_state.conn_pass = password or ""
+                    st.session_state.file_db_name = (dbname or "").strip()
                     _run_configuration_db_connect()
-            elif _src == "Local DB connection":
-                st.markdown(
-                    "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Database credentials</p>",
-                    unsafe_allow_html=True,
-                )
-                st.caption("Local DB: enter host, username, and password, then connect.")
-                st.session_state.conn_host = st.text_input(
-                    "Host",
-                    value=st.session_state.conn_host,
-                    key="in_host",
-                    placeholder="localhost or IP",
-                )
-                st.session_state.conn_port = "5432"
-                st.session_state.conn_user = st.text_input(
+                    # Suppress "Troubleshooter:" toast for normal connection attempts.
+                    q = list(st.session_state.get("_cfg_notifications") or [])
+                    st.session_state["_cfg_notifications"] = [
+                        n
+                        for n in q
+                        if not (
+                            str(n.get("level") or "") == "warning"
+                            and str(n.get("message") or "").startswith("Troubleshooter:")
+                        )
+                    ]
+                    # Render toast immediately (avoid "second click" feel).
+                    _render_cfg_notifications()
+        elif _src == "Local DB connection":
+            st.session_state.conn_use_ssh = False
+            st.markdown(
+                "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Database credentials</p>",
+                unsafe_allow_html=True,
+            )
+            st.caption("Local DB: enter host, username, and password, then connect.")
+            with st.form("local_db_connection_form", clear_on_submit=False):
+                _hcol, _pcol = st.columns([4, 1], gap="small")
+                with _hcol:
+                    host = st.text_input(
+                        "Host",
+                        value=st.session_state.get("conn_host") or "",
+                        key="in_host",
+                        placeholder="localhost or IP",
+                    )
+                with _pcol:
+                    port = st.text_input(
+                        "Port",
+                        value=st.session_state.get("conn_port") or "5432",
+                        key="in_port",
+                        placeholder="5432",
+                    )
+                username = st.text_input(
                     "Username",
-                    value=st.session_state.conn_user,
+                    value=st.session_state.get("conn_user") or "",
                     key="in_user",
                     placeholder="postgres",
                 )
-                st.session_state.conn_pass = st.text_input(
+                password = st.text_input(
                     "Password",
                     type="password",
-                    value=st.session_state.conn_pass,
+                    value=st.session_state.get("conn_pass") or "",
                     key="in_pass",
                 )
-                if st.button("Connection", type="primary", use_container_width=True, key="btn_cfg_connect_local"):
+                submitted_local = st.form_submit_button(
+                    "Connection",
+                    type="primary",
+                    use_container_width=True,
+                )
+            if submitted_local:
+                st.session_state["cfg_form_error"] = ""
+                if not ((host or "").strip() and (port or "").strip() and (username or "").strip() and (password or "").strip()):
+                    _fail("Please fill Host, Port, Username and Password before connecting.")
+                else:
+                    st.session_state.conn_host = (host or "").strip()
+                    st.session_state.conn_port = (port or "").strip()
+                    st.session_state.conn_user = (username or "").strip()
+                    st.session_state.conn_pass = password or ""
                     _run_configuration_db_connect()
+                    # Suppress "Troubleshooter:" toast for normal connection attempts.
+                    q = list(st.session_state.get("_cfg_notifications") or [])
+                    st.session_state["_cfg_notifications"] = [
+                        n
+                        for n in q
+                        if not (
+                            str(n.get("level") or "") == "warning"
+                            and str(n.get("message") or "").startswith("Troubleshooter:")
+                        )
+                    ]
+                    # Render toast immediately (avoid "second click" feel).
+                    _render_cfg_notifications()
+
+        # Render the error banner once per run (avoids DuplicateWidgetID).
+        _render_cfg_form_error()
 
         if _src == "Remote URL connection":
             _rdb = list(st.session_state.get("remote_conn_db_list") or [])

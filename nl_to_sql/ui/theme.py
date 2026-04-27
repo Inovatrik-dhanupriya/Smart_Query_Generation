@@ -20,7 +20,7 @@ def apply_shared_theme() -> None:
             }
             [data-testid="stSidebar"] .stMarkdown,
             [data-testid="stSidebar"] label {
-                color: #cbd5e1 !important;
+                colorz: #cbd5e1 !important;
             }
             /* Inputs: keep white field + dark readable text */
             [data-baseweb="input"] input,
@@ -722,11 +722,11 @@ def apply_tenant_page_shell() -> None:
             section.main .sqg-dash-title h1 { font-size: 1.75rem !important; }
             section.main .sqg-dash-sub { font-size: 0.92rem !important; }
         }
+        
         </style>
         """,
         unsafe_allow_html=True,
     )
-
 
 def render_page_header(title: str, subtitle: str = "") -> None:
     # Match the heading style used in streamlit_app.py (`st.title` + `st.caption`).
