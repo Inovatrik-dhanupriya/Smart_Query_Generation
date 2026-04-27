@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from utils.config import nl_sql_api_url
+from utils.constants import UI_AUTH_HTTP_TIMEOUT_SEC
 from utils.http import safe_response_payload
 
 API_URL = nl_sql_api_url()
@@ -24,7 +25,7 @@ def sign_in(username: str, password: str) -> dict[str, Any]:
                 "username": username,
                 "password": password,
             },
-            timeout=15,
+            timeout=UI_AUTH_HTTP_TIMEOUT_SEC,
         )
         body, jerr = safe_response_payload(resp)
         if jerr:
@@ -55,7 +56,7 @@ def sign_up(
                 "password": password,
                 "confirm_password": confirm_password,
             },
-            timeout=15,
+            timeout=UI_AUTH_HTTP_TIMEOUT_SEC,
         )
         body, jerr = safe_response_payload(resp)
         if jerr:

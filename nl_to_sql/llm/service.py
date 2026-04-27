@@ -14,6 +14,7 @@ from google.genai import types
 from llm.client import get_text_model
 from llm.response import json_slice_from_text, text_from_generate_response
 from llm.retry import generate_content_with_retry
+from utils.constants import TABLE_SELECTOR_MAX_OUTPUT_TOKENS
 
 _log = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ def select_tables_agent(
             contents=[types.Content(role="user", parts=[types.Part(text=message)])],
             config=types.GenerateContentConfig(
                 system_instruction=_AGENT_SELECTOR_PROMPT,
-                max_output_tokens=150,
+                max_output_tokens=TABLE_SELECTOR_MAX_OUTPUT_TOKENS,
                 temperature=0.0,   # deterministic — table selection is factual
             ),
         )
@@ -552,6 +553,203 @@ def _fallback_count_rows_sql(user_query: str, selected_tables: list[str], schema
     }
 
 
+def _tokenize_text(s: str) -> list[str]:
+    return re.findall(r"[a-z0-9_]+", (s or "").lower())
+
+
+def _singularize(tok: str) -> str:
+    t = (tok or "").strip().lower()
+    if t.endswith("ies") and len(t) > 3:
+        return t[:-3] + "y"
+    if t.endswith("es") and len(t) > 3:
+        return t[:-2]
+    if t.endswith("s") and len(t) > 2:
+        return t[:-1]
+    return t
+
+
+def _pick_label_column(meta: dict) -> str | None:
+    cols = meta.get("columns") or []
+    names = [str(c.get("column_name") or "").strip() for c in cols if isinstance(c, dict)]
+    low = {n.lower(): n for n in names if n}
+    for cand in (
+        "name",
+        "full_name",
+        "display_name",
+        "title",
+        "department_name",
+        "doctor_name",
+        "clinic_name",
+        "employee_name",
+        "patient_name",
+    ):
+        if cand in low:
+            return low[cand]
+    for n in names:
+        nl = n.lower()
+        if "name" in nl or "title" in nl or "label" in nl:
+            return n
+    return None
+
+
+def _fallback_general_select_sql(
+    user_query: str,
+    selected_tables: list[str],
+    schema: dict,
+    row_limit: int,
+    offset: int,
+) -> dict | None:
+    q = (user_query or "").strip()
+    ql = q.lower()
+    if not q:
+        return None
+
+    tables = selected_tables or list((schema.get("tables") or {}).keys())
+    if not tables:
+        return None
+
+    q_tokens = _tokenize_text(ql)
+    q_roots = {_singularize(t) for t in q_tokens}
+
+    def _tbl_score(tkey: str) -> int:
+        short = tkey.split(".")[-1].lower()
+        toks = _tokenize_text(short.replace("_", " "))
+        roots = {_singularize(t) for t in toks}
+        score = 0
+        if any(r in q_roots for r in roots):
+            score += 5
+        if any(t in q_tokens for t in toks):
+            score += 3
+        return score
+
+    base = max(tables, key=_tbl_score)
+    base_meta = (schema.get("tables") or {}).get(base) or {}
+    if "." in base:
+        bsch, btbl = base.split(".", 1)
+        from_sql = f'{_quote_ident_part(bsch)}.{_quote_ident_part(btbl)}'
+    else:
+        from_sql = _quote_ident_part(base)
+    base_cols = [str(c.get("column_name") or "").strip() for c in (base_meta.get("columns") or []) if isinstance(c, dict)]
+    base_cols_l = {c.lower(): c for c in base_cols}
+
+    # Aggregate fallback: "How many rows in <table> for each <x>, split by <y>"
+    # Example: "How many rows in api_request_limits for each id, split by kiosk_id?"
+    agg_m = re.search(r"\bfor each\s+([a-zA-Z0-9_]+)(?:\s*,\s*split by\s+([a-zA-Z0-9_]+))?", ql)
+    if re.search(r"\bhow many\b", ql) and "row" in ql and agg_m:
+        g1_raw = (agg_m.group(1) or "").strip().lower()
+        g2_raw = (agg_m.group(2) or "").strip().lower()
+        g1 = base_cols_l.get(g1_raw, "")
+        g2 = base_cols_l.get(g2_raw, "") if g2_raw else ""
+        if g1:
+            grp_cols = [f"t0.{_quote_ident_part(g1)} AS {g1}"]
+            grp_by = [f"t0.{_quote_ident_part(g1)}"]
+            if g2 and g2.lower() != g1.lower():
+                grp_cols.append(f"t0.{_quote_ident_part(g2)} AS {g2}")
+                grp_by.append(f"t0.{_quote_ident_part(g2)}")
+            sql = (
+                f"SELECT {', '.join(grp_cols)}, COUNT(*) AS row_count "
+                f"FROM {from_sql} AS t0 "
+                f"GROUP BY {', '.join(grp_by)} "
+                f"ORDER BY row_count DESC "
+                f"LIMIT {max(1, int(row_limit or 20))} OFFSET {max(0, int(offset or 0))}"
+            )
+            return {
+                "sql": sql,
+                "explanation": f"Count rows in `{base}` grouped by {', '.join([g1] + ([g2] if g2 else []))}.",
+                "chart_suggestion": "bar",
+                "viz_config": {
+                    "x": g1,
+                    "y": "row_count",
+                    "color": g2 or None,
+                    "title": f"Rows grouped by {g1}" + (f" and {g2}" if g2 else ""),
+                },
+            }
+
+    if not re.search(r"\b(show|list|display|get|find|top)\b", ql):
+        return None
+
+    select_cols: list[str] = []
+    base_label = _pick_label_column(base_meta)
+    if base_label:
+        select_cols.append(f't0.{_quote_ident_part(base_label)} AS {base_label}')
+    for c in base_cols:
+        cl = c.lower()
+        if c == base_label:
+            continue
+        if cl.endswith("_id") or cl == "id":
+            continue
+        select_cols.append(f"t0.{_quote_ident_part(c)} AS {c}")
+        if len(select_cols) >= 4:
+            break
+    if not select_cols:
+        select_cols = ["t0.*"]
+
+    joins: list[str] = []
+    requested_name_entities: list[str] = []
+    m = re.search(r"with\s+their\s+(.+?)\s+names?\b", ql)
+    if m:
+        chunk = m.group(1)
+        for part in re.split(r",|/| and |\s+", chunk):
+            p = _singularize(part.strip())
+            if p and p not in {"their", "with"}:
+                requested_name_entities.append(p)
+
+    fk_list = [fk for fk in (base_meta.get("foreign_keys") or []) if isinstance(fk, dict)]
+    alias_idx = 1
+    for ent in requested_name_entities:
+        for fk in fk_list:
+            fk_table = str(fk.get("foreign_table") or "").strip()
+            if not fk_table:
+                continue
+            short = fk_table.split(".")[-1].lower()
+            if ent not in _tokenize_text(short) and ent not in _singularize(short):
+                continue
+            ref_meta = (schema.get("tables") or {}).get(fk_table) or {}
+            lbl = _pick_label_column(ref_meta)
+            if "." in fk_table:
+                rsch, rtbl = fk_table.split(".", 1)
+                ref_sql = f'{_quote_ident_part(rsch)}.{_quote_ident_part(rtbl)}'
+            else:
+                ref_sql = _quote_ident_part(fk_table)
+            fk_col = str(fk.get("column_name") or "").strip()
+            ref_col = str(fk.get("foreign_column") or "id").strip()
+            if not fk_col:
+                continue
+            alias = f"t{alias_idx}"
+            joins.append(
+                f"LEFT JOIN {ref_sql} AS {alias} ON t0.{_quote_ident_part(fk_col)} = {alias}.{_quote_ident_part(ref_col)}"
+            )
+            if lbl:
+                select_cols.append(f"{alias}.{_quote_ident_part(lbl)} AS {ent}_name")
+            alias_idx += 1
+            break
+
+    where_sql = ""
+    if re.search(r"\bstatus\s+is\s+true\b", ql):
+        status_col = None
+        for c in base_cols:
+            cl = c.lower()
+            if cl in {"status", "is_active", "active", "enabled"}:
+                status_col = c
+                break
+        if status_col:
+            where_sql = f" WHERE t0.{_quote_ident_part(status_col)} = TRUE"
+
+    sql = (
+        f"SELECT {', '.join(select_cols)} "
+        f"FROM {from_sql} AS t0 "
+        + (" ".join(joins) + " " if joins else "")
+        + where_sql
+        + f" LIMIT {max(1, int(row_limit or 20))} OFFSET {max(0, int(offset or 0))}"
+    )
+    return {
+        "sql": sql,
+        "explanation": f"Fallback SQL generated from schema for `{base}`.",
+        "chart_suggestion": "table",
+        "viz_config": {"x": None, "y": None, "color": None, "title": "Query Results"},
+    }
+
+
 def _dedupe_prompt_list(prompts: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -832,8 +1030,10 @@ Generate the SQL query now."""
 
     if not raw:
         fb = _fallback_count_rows_sql(user_query, selected_tables, schema)
+        if fb is None:
+            fb = _fallback_general_select_sql(user_query, selected_tables, schema, row_limit, offset)
         if fb is not None:
-            _log.warning("LLM empty response; using deterministic count fallback.")
+            _log.warning("LLM empty response; using deterministic schema fallback.")
             return fb
         raise ValueError(
             "I could not generate SQL for this request right now. "
@@ -846,6 +1046,12 @@ Generate the SQL query now."""
     except json.JSONDecodeError:
         sql = _extract_sql_from_jsonish(raw)
         if not sql.strip():
+            fb = _fallback_count_rows_sql(user_query, selected_tables, schema)
+            if fb is None:
+                fb = _fallback_general_select_sql(user_query, selected_tables, schema, row_limit, offset)
+            if fb is not None:
+                _log.warning("LLM malformed JSON; using deterministic schema fallback.")
+                return fb
             raise ValueError(
                 "The model did not return valid JSON. Raw preview (first 500 chars): "
                 f"{raw[:500]!r}"
