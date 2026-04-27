@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import os
 
+from utils.constants import DEFAULT_CORS_DEV_ORIGINS, DEFAULT_NL_SQL_API_BASE
+
 
 def _int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
     raw = os.getenv(name)
@@ -73,7 +75,7 @@ def nl_sql_api_url() -> str:
     u = (
         os.getenv("NL_SQL_API_URL", "").strip()
         or os.getenv("API_URL", "").strip()
-        or "http://127.0.0.1:8000"
+        or DEFAULT_NL_SQL_API_BASE
     )
     return u.rstrip("/")
 
@@ -136,8 +138,5 @@ def cors_origins() -> list[str]:
     """
     raw = os.getenv("CORS_ORIGINS", "").strip()
     if not raw:
-        return [
-            "http://localhost:8501",
-            "http://127.0.0.1:8501",
-        ]
+        return list(DEFAULT_CORS_DEV_ORIGINS)
     return [o.strip() for o in raw.split(",") if o.strip()]

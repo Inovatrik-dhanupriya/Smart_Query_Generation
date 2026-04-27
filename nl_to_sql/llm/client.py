@@ -5,6 +5,7 @@ import os
 
 from google import genai
 
+from utils.constants import DEFAULT_GEMINI_EMBED_MODEL, DEFAULT_GEMINI_TEXT_MODEL
 from utils.env import load_app_env
 
 _client: genai.Client | None = None
@@ -23,8 +24,8 @@ def get_gemini_client() -> genai.Client:
 
 def get_text_model() -> str:
     load_app_env()
-    return os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-pro")
+    return os.getenv("GEMINI_TEXT_MODEL", DEFAULT_GEMINI_TEXT_MODEL)
 
 
 def get_embed_model() -> str:
-    return os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
+    return os.getenv("GEMINI_EMBED_MODEL", DEFAULT_GEMINI_EMBED_MODEL)

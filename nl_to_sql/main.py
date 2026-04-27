@@ -42,6 +42,31 @@ from utils.config import (
     session_max_age_hours,
     session_max_turns,
 )
+from utils.constants import (
+    RATE_LIMIT_DEFAULT,
+    RL_AUTH_SIGNIN,
+    RL_AUTH_SIGNUP,
+    RL_CACHE_CLEAR,
+    RL_CACHE_STATS,
+    RL_CLEAR_SESSION,
+    RL_DB_ACTIVATE,
+    RL_DB_CONNECT,
+    RL_DB_LIST_SCHEMAS,
+    RL_DB_LIST_TABLES,
+    RL_DB_USE_DATABASE,
+    RL_GENERATE_SQL,
+    RL_GET_SCHEMA,
+    RL_GET_SCHEMA_TABLES,
+    RL_IMPORT_TABLE,
+    RL_RELOAD_SCHEMA,
+    RL_SCHEMA_FROM_FILE,
+    RL_SCHEMA_FROM_FILE_ASYNC,
+    RL_SCHEMA_JOB_CONTROL,
+    RL_SCHEMA_JOB_STATUS,
+    RL_SQL_PAGE,
+    RL_SUGGEST_PROMPTS,
+    RL_SYNC_TABLES,
+)
 
 try:
     from utils.config import allow_data_ingestion_to_connected_db
@@ -342,6 +367,9 @@ def _schema_upload_core(
         sess["credentials"] = None
         sess["database"] = None
         close_pool(sid)
+    _ru_file = (remote_data_url or "").strip()
+    if _ru_file:
+        sess["remote_data_url"] = _ru_file
     hint = (
         "Connect to a PostgreSQL instance with the same tables, then POST /db/activate "
         "to enable query execution."
@@ -505,7 +533,7 @@ async def lifespan(app: FastAPI):
     log.info("Shutting down.")
 
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT_DEFAULT])
 
 app = FastAPI(
     title="NL → SQL API",
@@ -1043,6 +1071,58 @@ class QueryResponse(BaseModel):
     execution_skipped: bool = False
 
 
+def _query_mentions_any_table(prompt: str, table_names: list[str]) -> bool:
+    q = (prompt or "").lower()
+    q_norm = re.sub(r"[^a-z0-9]+", "", q)
+    for t in table_names:
+        tl = str(t).lower()
+        short = tl.split(".")[-1]
+        if tl in q or short in q:
+            return True
+        if re.sub(r"[^a-z0-9]+", "", short) in q_norm:
+            return True
+    return False
+
+
+def _is_single_table_intent(prompt: str) -> bool:
+    q = (prompt or "").lower()
+    return bool(
+        re.search(
+            r"\b(top|show|list|preview|sample|first|count|how many)\b.*\b(rows?|records?)\b",
+            q,
+        )
+        or re.search(r"\bshow\b.*\bdata\b", q)
+    )
+
+
+def _auto_pick_primary_table(prompt: str, selected_tables: list[str], schema: dict) -> str | None:
+    """
+    Choose one best table for generic single-table prompts when user didn't mention table.
+    """
+    if not selected_tables:
+        return None
+    q = (prompt or "").lower()
+    q_tokens = set(re.findall(r"[a-z0-9]+", q))
+    best: tuple[int, str] | None = None
+    for t in selected_tables:
+        tl = str(t).lower()
+        short = tl.split(".")[-1]
+        score = 0
+        # Purely dynamic token overlap with table identifier parts.
+        t_tokens = set(re.findall(r"[a-z0-9]+", short))
+        score += len(q_tokens & t_tokens) * 3
+        # Prefer tables with richer metadata/signals (dynamic, schema-driven).
+        cols = (schema.get("tables", {}).get(t, {}) or {}).get("columns", []) or []
+        fks = (schema.get("tables", {}).get(t, {}) or {}).get("foreign_keys", []) or []
+        sample = (schema.get("tables", {}).get(t, {}) or {}).get("sample_rows", []) or []
+        score += min(8, len(cols) // 3)
+        score += min(4, len(fks))
+        score += 2 if sample else 0
+        if best is None or score > best[0]:
+            best = (score, t)
+    return best[1] if best else selected_tables[0]
+
+
 class PageRequest(BaseModel):
     sql: str
     session_id: str
@@ -1234,7 +1314,7 @@ class ReloadBody(BaseModel):
 
 
 @app.post("/db/connect")
-@limiter.limit("30/minute")
+@limiter.limit(RL_DB_CONNECT)
 def db_connect(request: Request, body: DbConnectBody):
     """
     Open a pooled read-only connection. ``catalog_database`` is the initial
@@ -1303,7 +1383,7 @@ def db_connect(request: Request, body: DbConnectBody):
 
 
 @app.post("/db/use-database")
-@limiter.limit("30/minute")
+@limiter.limit(RL_DB_USE_DATABASE)
 def db_use_database(request: Request, body: DbUseDatabaseBody):
     sid = body.session_id.strip()
     sess = _get_nl(sid)
@@ -1330,7 +1410,7 @@ def db_use_database(request: Request, body: DbUseDatabaseBody):
 
 
 @app.get("/db/schemas")
-@limiter.limit("60/minute")
+@limiter.limit(RL_DB_LIST_SCHEMAS)
 def db_list_schemas(request: Request, session_id: str):
     sid = session_id.strip()
     sess = _get_nl(sid)
@@ -1344,7 +1424,7 @@ def db_list_schemas(request: Request, session_id: str):
 
 
 @app.get("/db/tables")
-@limiter.limit("60/minute")
+@limiter.limit(RL_DB_LIST_TABLES)
 def db_list_tables(request: Request, session_id: str, schemas: str = ""):
     """Comma-separated schema names; empty = all non-system schemas visible to the user."""
     sid = session_id.strip()
@@ -1362,7 +1442,7 @@ def db_list_tables(request: Request, session_id: str, schemas: str = ""):
 
 
 @app.post("/db/activate")
-@limiter.limit("10/minute")
+@limiter.limit(RL_DB_ACTIVATE)
 def db_activate(request: Request, body: DbActivateBody):
     """Load metadata + embeddings for the selected tables (live database)."""
     sid = body.session_id.strip()
@@ -1398,7 +1478,7 @@ def db_activate(request: Request, body: DbActivateBody):
 
 
 @app.post("/schema/from-file")
-@limiter.limit("10/minute")
+@limiter.limit(RL_SCHEMA_FROM_FILE)
 async def schema_from_file_upload(
     request: Request,
     session_id: str = Form(...),
@@ -1525,7 +1605,7 @@ class SchemaUploadJobControlBody(BaseModel):
 
 
 @app.post("/schema/from-file/async")
-@limiter.limit("10/minute")
+@limiter.limit(RL_SCHEMA_FROM_FILE_ASYNC)
 async def schema_from_file_upload_async(
     request: Request,
     session_id: str = Form(...),
@@ -1588,7 +1668,7 @@ async def schema_from_file_upload_async(
 
 
 @app.get("/schema/from-file/job/{job_id}")
-@limiter.limit("120/minute")
+@limiter.limit(RL_SCHEMA_JOB_STATUS)
 def schema_upload_job_status(request: Request, job_id: str, session_id: str):
     """Return job status; ``session_id`` must match the job owner."""
     sid = (session_id or "").strip()
@@ -1616,7 +1696,7 @@ def schema_upload_job_status(request: Request, job_id: str, session_id: str):
 
 
 @app.post("/schema/from-file/job/{job_id}/control")
-@limiter.limit("60/minute")
+@limiter.limit(RL_SCHEMA_JOB_CONTROL)
 def schema_upload_job_control(
     request: Request, job_id: str, body: SchemaUploadJobControlBody
 ):
@@ -1682,7 +1762,7 @@ def health(request: Request, session_id: Optional[str] = None):
 
 
 @app.get("/schema")
-@limiter.limit("30/minute")
+@limiter.limit(RL_GET_SCHEMA)
 def get_schema(request: Request, session_id: str):
     sid = session_id.strip()
     s = _get_nl(sid)
@@ -1699,7 +1779,7 @@ def get_schema(request: Request, session_id: str):
 
 
 @app.get("/schema/tables")
-@limiter.limit("60/minute")
+@limiter.limit(RL_GET_SCHEMA_TABLES)
 def get_schema_tables(request: Request, session_id: str):
     s = _get_nl(session_id.strip())
     if not s:
@@ -1725,7 +1805,7 @@ def get_schema_tables(request: Request, session_id: str):
 
 
 @app.get("/suggest-prompts")
-@limiter.limit("30/minute")
+@limiter.limit(RL_SUGGEST_PROMPTS)
 def suggest_prompts_endpoint(request: Request, session_id: str, last_query: str = ""):
     s = _get_nl(session_id.strip())
     if not s:
@@ -1736,7 +1816,7 @@ def suggest_prompts_endpoint(request: Request, session_id: str, last_query: str 
 
 
 @app.post("/api/platform/auth/signup", response_model=SignUpResponse)
-@limiter.limit("20/minute")
+@limiter.limit(RL_AUTH_SIGNUP)
 def signup_endpoint(request: Request, req: SignUpRequest):
     if req.password != req.confirm_password:
         raise HTTPException(status_code=400, detail="Confirm password does not match.")
@@ -1801,7 +1881,7 @@ def signup_endpoint(request: Request, req: SignUpRequest):
 
 
 @app.post("/api/platform/auth/signin", response_model=SignInResponse)
-@limiter.limit("30/minute")
+@limiter.limit(RL_AUTH_SIGNIN)
 def signin_endpoint(request: Request, req: SignInRequest):
     try:
         prepare_app_auth_backend()
@@ -1856,7 +1936,7 @@ def signin_endpoint(request: Request, req: SignInRequest):
 
 
 @app.post("/generate-sql", response_model=QueryResponse)
-@limiter.limit("10/minute")
+@limiter.limit(RL_GENERATE_SQL)
 def generate_sql_endpoint(request: Request, req: QueryRequest):
     sid = (req.session_id or "").strip()
     if not sid:
@@ -1913,6 +1993,24 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
         req.prompt, selected_tables, schema
     )
     selected_tables = fk_expand_seed_tables(selected_tables, schema)
+    auto_pick_note = ""
+    if (
+        selected_tables
+        and _is_single_table_intent(req.prompt)
+        and not _query_mentions_any_table(req.prompt, all_tables)
+    ):
+        chosen = _auto_pick_primary_table(req.prompt, selected_tables, schema)
+        if chosen:
+            alternatives = [t for t in selected_tables if t != chosen][:4]
+            selected_tables = [chosen]
+            if alternatives:
+                auto_pick_note = (
+                    f" Auto-selected table `{chosen}`. If this is not expected, try: "
+                    + ", ".join(f"`{x}`" for x in alternatives)
+                    + "."
+                )
+            else:
+                auto_pick_note = f" Auto-selected table `{chosen}`."
 
     table_fp = ",".join(sorted(selected_tables))
     ckey = _llm_cache_key(req.prompt, table_fp)
@@ -1967,7 +2065,10 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
                         ) from e
                     raise
                 except ValueError as e:
-                    raise HTTPException(status_code=502, detail=str(e)) from e
+                    msg = str(e)
+                    if auto_pick_note:
+                        msg += auto_pick_note
+                    raise HTTPException(status_code=502, detail=msg) from e
                 cached_used = False
 
             sql = (llm_result.get("sql") or "").strip()
@@ -2024,6 +2125,33 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
         tables_used = canonical_tables_referenced_in_sql(sql, schema) or selected_tables
 
     if not s.get("execution_enabled"):
+        _remote_url = (s.get("remote_data_url") or "").strip()
+        if _remote_url and not (meta_tables_reply or meta_schema_count or meta_schema_list):
+            try:
+                remote_rows_raw = fetch_from_remote_api(sql, _remote_url)
+                norm_rows: list[dict] = []
+                for r in remote_rows_raw:
+                    if isinstance(r, dict):
+                        norm_rows.append(r)
+                    else:
+                        norm_rows.append({"value": r})
+                cols = list(norm_rows[0].keys()) if norm_rows else []
+                return QueryResponse(
+                    sql=sql,
+                    explanation=explanation + " (Executed on remote SQL API.)",
+                    chart_suggestion=chart_suggestion,
+                    viz_config=viz_config,
+                    columns=cols,
+                    rows=norm_rows,
+                    row_count=len(norm_rows),
+                    total_count=len(norm_rows),
+                    has_more=False,
+                    execution_ms=0,
+                    tables_used=tables_used,
+                    execution_skipped=False,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Remote SQL execution failed: {e}") from e
         # No PostgreSQL pool — data questions return empty. For meta questions we can
         # still return rows from the loaded in-memory schema so the table grid is useful.
         _lim = max(1, min(int(req.row_limit or 20), 5000))
@@ -2107,8 +2235,41 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
     try:
         exec_result = execute_sql(sql, session_id=sid)
     except Exception as e:
-        log.error("SQL execution error: %s", e)
-        raise HTTPException(status_code=500, detail=f"SQL execution failed: {e}") from e
+        err_txt = str(e)
+        log.error("SQL execution error: %s", err_txt)
+        # One-shot self-repair on SQL syntax errors from model output.
+        if "syntax error at or near" in err_txt.lower():
+            try:
+                _llm_cache_pop(ckey)
+                repair_hint_exec = (
+                    "Your previous SQL failed on PostgreSQL execution. "
+                    f"Error: {err_txt}. "
+                    "Return corrected PostgreSQL SELECT-only SQL. "
+                    f"Previous SQL: {sql}"
+                )
+                repaired = generate_sql(
+                    user_query=req.prompt,
+                    selected_tables=selected_tables,
+                    table_descriptions=descriptions,
+                    schema=schema,
+                    chat_history=history,
+                    row_limit=req.row_limit or 20,
+                    offset=req.offset or 0,
+                    repair_hint=repair_hint_exec,
+                )
+                sql = fix_postgresql_mixed_case_identifiers((repaired.get("sql") or "").strip(), schema)
+                sql = validate_sql(sql)
+                validate_sql_tables_against_schema(sql, schema)
+                explanation = repaired.get("explanation", explanation)
+                chart_suggestion = repaired.get("chart_suggestion", chart_suggestion)
+                viz_config = repaired.get("viz_config") or viz_config
+                tables_used = canonical_tables_referenced_in_sql(sql, schema) or selected_tables
+                exec_result = execute_sql(sql, session_id=sid)
+            except Exception as e2:
+                log.error("SQL repair attempt failed: %s", e2)
+                raise HTTPException(status_code=500, detail=f"SQL execution failed: {e2}") from e2
+        else:
+            raise HTTPException(status_code=500, detail=f"SQL execution failed: {e}") from e
 
     if sid:
         sessions.setdefault(sid, [])
@@ -2131,7 +2292,7 @@ def generate_sql_endpoint(request: Request, req: QueryRequest):
 
 
 @app.post("/sql/page", response_model=PageResponse)
-@limiter.limit("20/minute")
+@limiter.limit(RL_SQL_PAGE)
 def paginate_sql(request: Request, req: PageRequest):
     try:
         result = execute_sql_page(req.sql, session_id=req.session_id, page=req.page, page_size=req.page_size)
@@ -2144,7 +2305,7 @@ def paginate_sql(request: Request, req: PageRequest):
 
 
 @app.delete("/session/{session_id}")
-@limiter.limit("10/minute")
+@limiter.limit(RL_CLEAR_SESSION)
 def clear_session(request: Request, session_id: str):
     sessions.pop(session_id, None)
     _save_sessions(sessions)
@@ -2152,13 +2313,13 @@ def clear_session(request: Request, session_id: str):
 
 
 @app.get("/cache/stats")
-@limiter.limit("30/minute")
+@limiter.limit(RL_CACHE_STATS)
 def get_cache_stats(request: Request):
     return cache_stats()
 
 
 @app.delete("/cache/clear")
-@limiter.limit("10/minute")
+@limiter.limit(RL_CACHE_CLEAR)
 def clear_cache_endpoint(request: Request):
     removed = cache_clear()
     log.info("SQL cache cleared — %s entries.", removed)
@@ -2166,7 +2327,7 @@ def clear_cache_endpoint(request: Request):
 
 
 @app.post("/reload-schema")
-@limiter.limit("5/minute")
+@limiter.limit(RL_RELOAD_SCHEMA)
 def reload_schema(request: Request, body: ReloadBody):
     sid = body.session_id.strip()
     s = _get_nl(sid)
@@ -2195,7 +2356,7 @@ def reload_schema(request: Request, body: ReloadBody):
 
 
 @app.post("/import-table")
-@limiter.limit("5/minute")
+@limiter.limit(RL_IMPORT_TABLE)
 def import_table_endpoint(req: ImportRequest, request: Request):
     if not allow_data_ingestion_to_connected_db():
         raise HTTPException(
@@ -2239,7 +2400,7 @@ def import_table_endpoint(req: ImportRequest, request: Request):
 
 
 @app.post("/sync-tables")
-@limiter.limit("30/minute")
+@limiter.limit(RL_SYNC_TABLES)
 def sync_tables_endpoint(req: SyncRequest, request: Request):
     if not allow_data_ingestion_to_connected_db():
         raise HTTPException(
