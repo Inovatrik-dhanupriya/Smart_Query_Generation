@@ -15,6 +15,15 @@ import numpy as np
 from google.genai import types
 
 from llm.client import get_embed_model, get_gemini_client
+from utils.constants import (
+    FAISS_DEFAULT_TOP_K,
+    FAISS_EMBED_BATCH_SIZE,
+    FAISS_MAX_FK_CLOSURE,
+    FAISS_RETRIEVE_SCORE_THRESHOLD,
+    FK_EXPAND_MAX_ITERATIONS,
+    FK_EXPAND_MIN_MAX_TOTAL,
+    GEMINI_EMBEDDING_DIMENSION,
+)
 from utils.env import load_app_env, project_root
 
 load_app_env()
@@ -24,16 +33,11 @@ def _default_cache_root() -> Path:
     return Path(os.getenv("FAISS_CACHE_DIR", project_root() / ".faiss_cache"))
 
 
-_EMBED_BATCH_SIZE = 100
-# Cap FK closure so a huge schema does not pull every table into every query.
-_MAX_FK_CLOSURE = 24
-
-
 def fk_expand_seed_tables(
     seed_tables: list[str],
     schema: dict,
     *,
-    max_tables: int = _MAX_FK_CLOSURE,
+    max_tables: int = FAISS_MAX_FK_CLOSURE,
 ) -> list[str]:
     """
     Given an initial set of table keys, add every table reachable by one foreign-key
@@ -42,9 +46,9 @@ def fk_expand_seed_tables(
     """
     base_tables = set(seed_tables)
     all_meta = schema.get("tables", {})
-    max_total = min(max_tables, max(12, len(all_meta)))
+    max_total = min(max_tables, max(FK_EXPAND_MIN_MAX_TOTAL, len(all_meta)))
 
-    for _ in range(4):
+    for _ in range(FK_EXPAND_MAX_ITERATIONS):
         if len(base_tables) >= max_total:
             break
         before = len(base_tables)
@@ -68,15 +72,15 @@ def fk_expand_seed_tables(
 
 def _embed_documents(texts: list[str]) -> np.ndarray:
     if not texts:
-        return np.empty((0, 3072), dtype=np.float32)
+        return np.empty((0, GEMINI_EMBEDDING_DIMENSION), dtype=np.float32)
 
     all_vecs: list[np.ndarray] = []
 
-    for i in range(0, len(texts), _EMBED_BATCH_SIZE):
-        chunk = texts[i : i + _EMBED_BATCH_SIZE]
+    for i in range(0, len(texts), FAISS_EMBED_BATCH_SIZE):
+        chunk = texts[i : i + FAISS_EMBED_BATCH_SIZE]
         print(
-            f"[SchemaRetriever] Embedding batch {i // _EMBED_BATCH_SIZE + 1}"
-            f"/{-(-len(texts) // _EMBED_BATCH_SIZE)} ({len(chunk)} texts) …"
+            f"[SchemaRetriever] Embedding batch {i // FAISS_EMBED_BATCH_SIZE + 1}"
+            f"/{-(-len(texts) // FAISS_EMBED_BATCH_SIZE)} ({len(chunk)} texts) …"
         )
         resp = get_gemini_client().models.embed_content(
             model=get_embed_model(),
@@ -185,8 +189,8 @@ class SchemaRetriever:
     def retrieve(
         self,
         query: str,
-        top_k: int = 3,
-        threshold: float = 0.3,
+        top_k: int = FAISS_DEFAULT_TOP_K,
+        threshold: float = FAISS_RETRIEVE_SCORE_THRESHOLD,
     ) -> list[str]:
         if self._index is None or self._index.ntotal == 0:
             return []
@@ -207,13 +211,13 @@ class SchemaRetriever:
         self,
         query: str,
         schema: dict,
-        top_k: int = 3,
+        top_k: int = FAISS_DEFAULT_TOP_K,
     ) -> list[str]:
         """
         Seed from FAISS, then expand along foreign keys in **both** directions:
         parents (FK targets) and children (tables that reference a selected table).
         A few iterations cover multi-hop star schemas without pulling the whole DB
-        (capped by ``_MAX_FK_CLOSURE``).
+        (capped by ``FAISS_MAX_FK_CLOSURE``).
         """
         seed = self.retrieve(query, top_k=top_k)
-        return fk_expand_seed_tables(seed, schema, max_tables=_MAX_FK_CLOSURE)
+        return fk_expand_seed_tables(seed, schema, max_tables=FAISS_MAX_FK_CLOSURE)

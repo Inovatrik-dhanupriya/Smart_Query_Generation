@@ -10,12 +10,19 @@ from typing import Any
 
 import streamlit as st
 
+from utils.constants import (
+    AUTH_LOCAL_SESSION_FILENAME,
+    AUTH_QUERY_PARAM_EXP,
+    AUTH_QUERY_PARAM_USER,
+    AUTH_SESSION_TTL_MINUTES_DEFAULT,
+)
+
 AUTH_USER_KEY = "auth_user"
 AUTH_EXP_KEY = "_auth_expires_at"
 
-_QP_USER_KEY = "sqg_auth_u"
-_QP_EXP_KEY = "sqg_auth_e"
-_SESSION_FILE = Path(__file__).resolve().parent / ".auth_session.json"
+_QP_USER_KEY = AUTH_QUERY_PARAM_USER
+_QP_EXP_KEY = AUTH_QUERY_PARAM_EXP
+_SESSION_FILE = Path(__file__).resolve().parent / AUTH_LOCAL_SESSION_FILENAME
 
 
 def _b64_encode_json(payload: dict[str, Any]) -> str:
@@ -84,7 +91,7 @@ def _clear_local_session() -> None:
         pass
 
 
-def set_auth_session(user: dict[str, Any], ttl_minutes: int = 30) -> None:
+def set_auth_session(user: dict[str, Any], ttl_minutes: int = AUTH_SESSION_TTL_MINUTES_DEFAULT) -> None:
     """Persist auth in session_state + query params for browser refresh recovery."""
     now = time.time()
     exp = now + max(1, int(ttl_minutes)) * 60

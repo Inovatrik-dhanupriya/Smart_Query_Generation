@@ -10,14 +10,25 @@ from typing import Iterable
 
 from db import get_cursor
 
-_SYNC_SCHEMA_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
+_SYNC_SCHEMA_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$")
 
 _SYSTEM_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
 
 
 def validate_pg_identifier(name: str) -> str:
     """Validate a PostgreSQL identifier (schema / table name). Raises ValueError if invalid."""
-    s = (name or "").strip()
+    raw = name
+    if isinstance(raw, list):
+        if len(raw) == 1:
+            raw = raw[0]
+        else:
+            raise ValueError(f"Invalid PostgreSQL identifier: {name!r}")
+    if raw is None:
+        raise ValueError("Invalid PostgreSQL identifier: None")
+    s = str(raw).strip()
+    # Single identifier only (no schema.table here), disallow quote chars.
+    if "." in s or '"' in s or "\x00" in s:
+        raise ValueError(f"Invalid PostgreSQL identifier: {name!r}")
     if not _SYNC_SCHEMA_RE.match(s):
         raise ValueError(f"Invalid PostgreSQL identifier: {name!r}")
     return s

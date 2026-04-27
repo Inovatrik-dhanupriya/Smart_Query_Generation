@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -156,8 +157,20 @@ def start_ssh_pg_tunnel(
     """
     from io import StringIO
 
-    import paramiko
-    from sshtunnel import SSHTunnelForwarder
+    try:
+        import paramiko  # type: ignore[import-not-found]
+        # Compatibility: Paramiko 3.x removed DSSKey; sshtunnel may still reference it.
+        # We don't support DSA keys here, but defining the attribute prevents sshtunnel import errors.
+        if not hasattr(paramiko, "DSSKey"):
+            paramiko.DSSKey = paramiko.RSAKey  # type: ignore[attr-defined]
+        from sshtunnel import SSHTunnelForwarder  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise ValueError(
+            "SSH tunnel requires the 'paramiko' and 'sshtunnel' packages on the machine that runs "
+            "the API. Install them in the same Python environment as uvicorn, e.g.: "
+            "pip install paramiko sshtunnel  "
+            f"(import error: {e})"
+        ) from e
 
     _stop_ssh_tunnel(session_id)
     pem = (ssh_private_key_pem or "").strip()
@@ -187,8 +200,16 @@ def start_ssh_pg_tunnel(
         ssh_username=(ssh_username or "").strip(),
         ssh_pkey=pkey,
         remote_bind_address=(ch, cp),
+        local_bind_address=("127.0.0.1", 0),
     )
-    tunnel.start()
+    try:
+        tunnel.start()
+    except Exception as e:
+        try:
+            tunnel.stop()
+        except Exception:
+            pass
+        raise RuntimeError(f"SSH tunnel could not start: {e}") from e
     lport = tunnel.local_bind_port
     if lport is None:
         try:
@@ -198,6 +219,23 @@ def start_ssh_pg_tunnel(
         raise RuntimeError("SSH tunnel did not return a local port.")
     if isinstance(lport, (list, tuple)):
         lport = lport[0]
+
+    # Defensive check: ensure the local forward is actually listening before we try psycopg2.
+    try:
+        import socket
+
+        with socket.create_connection(("127.0.0.1", int(lport)), timeout=1.5):
+            pass
+    except Exception as e:
+        try:
+            tunnel.stop()
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"SSH tunnel started but local port {lport} is not reachable: {e}. "
+            f"Check that PostgreSQL is reachable from the SSH host at {ch}:{cp}."
+        ) from e
+
     key = _pool_key(session_id)
     with _lock:
         _ssh_tunnels[key] = tunnel
@@ -242,23 +280,41 @@ def register_pool(session_id: str, creds: PgCredentials, *, read_only: bool = Tr
     ``read_only=True`` sets default_transaction_read_only=on (NL→SQL execution path).
     """
     key = _pool_key(session_id)
-    close_pool(key)
+    # IMPORTANT: when using SSH tunneling, `start_ssh_pg_tunnel()` is called right before
+    # `register_pool()`. Do NOT stop the tunnel here; only replace the connection pool.
+    close_pool_only(key)
     opts = (
         "-c default_transaction_read_only=on"
         if read_only
         else "-c default_transaction_read_only=off"
     )
-    pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=1,
-        maxconn=10,
-        host=creds.host.strip(),
-        port=int(creds.port),
-        dbname=creds.database.strip(),
-        user=creds.user,
-        password=creds.password,
-        connect_timeout=10,
-        options=opts,
-    )
+    # When connecting through an SSH tunnel, the local forwarder can take a moment
+    # to become ready on Windows. Retry a few times instead of crashing the API with a 500.
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=10,
+                host=creds.host.strip(),
+                port=int(creds.port),
+                dbname=creds.database.strip(),
+                user=creds.user,
+                password=creds.password,
+                connect_timeout=10,
+                options=opts,
+            )
+            break
+        except psycopg2.OperationalError as e:
+            last_err = e
+            # Only retry for sessions that have an SSH tunnel and only for "connection refused".
+            msg = str(e)
+            if _pool_key(session_id) not in _ssh_tunnels or "Connection refused" not in msg:
+                raise
+            time.sleep(0.35 * (attempt + 1))
+    else:
+        assert last_err is not None
+        raise last_err
     with _lock:
         _pools[key] = pool
     mode = "read-only" if read_only else "read-write"

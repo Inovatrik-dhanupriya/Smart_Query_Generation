@@ -16,6 +16,16 @@ DEFAULT_TENANT_ID = "ten-default"
 
 log = logging.getLogger(__name__)
 
+# Aligned with create_project default and project_edit help text.
+PROJECT_STATUS_OPTIONS: tuple[str, ...] = ("Draft", "Active", "Archived")
+
+
+def project_status_select_index(status: str | None) -> int:
+    s = (status or "").strip() or "Draft"
+    if s in PROJECT_STATUS_OPTIONS:
+        return PROJECT_STATUS_OPTIONS.index(s)
+    return 0
+
 
 def _default_nl_session() -> str:
     return str(uuid.uuid4())

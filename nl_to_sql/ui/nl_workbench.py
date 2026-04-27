@@ -21,8 +21,9 @@ import math
 import re
 import time
 import uuid
+from difflib import get_close_matches
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -115,6 +116,51 @@ def _db_connect_request_body() -> dict:
         if (st.session_state.get("conn_ssh_key_pass") or "").strip():
             body["ssh_private_key_passphrase"] = (st.session_state.get("conn_ssh_key_pass") or "").strip()
     return body
+
+
+def _apply_uploaded_ssh_key_to_session(uploaded: Any) -> None:
+    """Load an uploaded private-key file into ``conn_ssh_key`` (UTF-8, lenient on errors)."""
+    if uploaded is None:
+        return
+    try:
+        raw: bytes = uploaded.getvalue()
+    except Exception:
+        return
+    if not raw:
+        return
+    st.session_state["conn_ssh_key"] = raw.decode("utf-8", errors="replace")
+
+
+def _run_configuration_db_connect() -> None:
+    """POST ``/db/connect`` from the Configuration panel (Local or Server)."""
+    # Backend default is: initial_db = (catalog_database or username).
+    # In the UI we collect "Database name" as ``file_db_name``; use it as the catalog DB
+    # unless the user explicitly provided a different catalog DB.
+    if not (st.session_state.get("catalog_db") or "").strip():
+        _dbn = (st.session_state.get("file_db_name") or "").strip()
+        if _dbn:
+            st.session_state["catalog_db"] = _dbn
+    body = _db_connect_request_body()
+    try:
+        r = requests.post(f"{API_URL}/db/connect", json=body, timeout=90)
+        info, jerr = safe_response_payload(r)
+        if jerr:
+            _cfg_notify_error_with_help(str(jerr), "Connection failed")
+        elif r.ok and isinstance(info, dict):
+            st.session_state.db_list = info.get("databases") or []
+            st.session_state.pg_session_connected = True
+            _sfx = " (via SSH tunnel)" if info.get("via_ssh") else ""
+            _cfg_notify(
+                "success",
+                f"Connected — {len(st.session_state.db_list)} database(s) listed.{_sfx}",
+            )
+        else:
+            _cfg_notify_error_with_help(
+                (info or {}).get("detail", "Connect failed") if isinstance(info, dict) else "Connect failed",
+                "Connection failed",
+            )
+    except Exception as ex:
+        _cfg_notify_error_with_help(str(ex), "Connection failed")
 
 
 def _persist_activated_schema_to_app() -> None:
@@ -237,14 +283,14 @@ def _schema_activation_running_without_pause() -> bool:
     return not bool(st.session_state.get("schema_job_paused"))
 
 
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-
-
 def _quote_ident(name: str) -> str:
+    """
+    Quote PostgreSQL identifier safely (supports dashed names like `pdf-content-control`).
+    """
     n = (name or "").strip()
-    if not _IDENT_RE.match(n):
-        raise ValueError(f"Invalid identifier: {name!r}")
-    return f'"{n}"'
+    if not n:
+        raise ValueError("Identifier is empty.")
+    return '"' + n.replace('"', '""') + '"'
 
 
 def _parse_uploaded_tables_for_preview(file_obj: Any) -> list[dict[str, Any]]:
@@ -308,6 +354,27 @@ def _fetch_remote_table_count(api_url: str, schema_name: str, table_name: str) -
     return 0
 
 
+def _fetch_remote_rows(api_url: str, query: str, timeout: int = 60) -> list[dict[str, Any]]:
+    """Run SQL against remote passthrough API and normalize row payload."""
+    r = requests.post(
+        (api_url or "").strip(),
+        json={"query": query},
+        headers={"Content-Type": "application/json"},
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    body = r.json()
+    rows = body if isinstance(body, list) else (
+        body.get("rows")
+        or body.get("data")
+        or body.get("result")
+        or body.get("records")
+        or body.get("entity")
+        or []
+    )
+    return rows if isinstance(rows, list) else []
+
+
 def _reset_connection_runtime_state() -> None:
     """Clear connection/schema runtime state; keep user preferences."""
     for k, v in {
@@ -327,6 +394,15 @@ def _reset_connection_runtime_state() -> None:
         "schema_job_error": None,
         "schema_job_paused": False,
         "schema_upload_need_connection_help": False,
+        "remote_conn_url": "",
+        "remote_conn_db_list": [],
+        "remote_conn_schema_list": [],
+        "remote_conn_table_list": [],
+        "remote_conn_selected_db": "",
+        "remote_conn_selected_schema": "",
+        "remote_conn_selected_tables": [],
+        "remote_conn_load_mode": "Load limited data",
+        "remote_conn_row_limit": int(remote_sync_default_row_limit()),
         "_workbench_health": {},
     }.items():
         st.session_state[k] = v
@@ -461,12 +537,270 @@ def _post_schema_job_control(job_id: str, session_id: str, action: str) -> bool:
 
 
 def _on_configuration_source_changed() -> None:
-    """Sidebar Source radio: switch main panel to setup (hide Getting started)."""
+    """Connection type changed: switch main panel to setup (hide Getting started)."""
     st.session_state["cfg_show_connection_main"] = True
+    # Fresh form/session view when user switches connection mode.
+    # Keeps chat/session history untouched; clears only connection wizard state.
+    for _k, _v in {
+        "pg_session_connected": False,
+        "db_list": [],
+        "schema_list": [],
+        "table_flat": [],
+        "pick_schemas": [],
+        "pick_tables": [],
+        "sel_table_labels": [],
+        "table_catalog_fp": "",
+        "sb_database": "",
+        "file_db_name": "",
+        "catalog_db": "",
+        "schema_activation_job_id": None,
+        "schema_job_result": None,
+        "schema_job_error": None,
+        "schema_upload_need_connection_help": False,
+        "conn_host": "",
+        "conn_port": "5432",
+        "conn_user": "",
+        "conn_pass": "",
+        "conn_use_ssh": False,
+        "conn_ssh_host": "",
+        "conn_ssh_port": "22",
+        "conn_ssh_user": "",
+        "conn_ssh_key": "",
+        "conn_ssh_key_pass": "",
+        "remote_conn_url": "",
+        "remote_conn_db_list": [],
+        "remote_conn_schema_list": [],
+        "remote_conn_table_list": [],
+        "remote_conn_selected_db": "",
+        "remote_conn_selected_schema": "",
+        "remote_conn_selected_tables": [],
+        "remote_conn_load_mode": "Load limited data",
+        "remote_conn_row_limit": int(remote_sync_default_row_limit()),
+        "remote_conn_counts_summary": {},
+    }.items():
+        st.session_state[_k] = _v
+
+
+def _cfg_notify(level: str, message: str) -> None:
+    """Queue configuration notifications (auto-hide after 2 minutes)."""
+    lvl = (level or "info").strip().lower()
+    if lvl not in {"success", "error", "warning", "info"}:
+        lvl = "info"
+    q = st.session_state.setdefault("_cfg_notifications", [])
+    q.append(
+        {
+            "id": uuid.uuid4().hex[:10],
+            "level": lvl,
+            "message": str(message or ""),
+            "created_at": time.time(),
+        }
+    )
+    st.session_state["_cfg_notifications"] = q[-8:]
+
+
+def _cfg_notify_once(key: str, level: str, message: str) -> None:
+    """Queue once per key until key is cleared/replaced."""
+    skey = "_cfg_notifications_seen_keys"
+    seen = st.session_state.setdefault(skey, set())
+    if key in seen:
+        return
+    _cfg_notify(level, message)
+    seen.add(key)
+    st.session_state[skey] = seen
+
+
+def _cfg_troubleshoot_hint(err: str) -> str:
+    """Map common upload/connection errors to actionable hints."""
+    e = str(err or "").lower()
+    if "no pg_hba.conf entry" in e:
+        return "PostgreSQL server rejected your client IP. Add a `pg_hba.conf` rule for this host/user/database and reload PostgreSQL."
+    if "password authentication failed" in e:
+        return "Username/password is wrong for this database. Verify credentials and DB name."
+    if "connection refused" in e or "could not connect to server" in e:
+        return "Host/port is unreachable. Check server status, network route, firewall, and port."
+    if "ssl" in e and ("required" in e or "encryption" in e):
+        return "SSL settings mismatch between client and server. Enable required SSL mode/certs on server/client."
+    if "invalid identifier" in e:
+        return "Identifier contains special characters. Keep quoted identifier handling enabled and retry metadata fetch."
+    if "timed out" in e or "timeout" in e:
+        return "Request timed out. Try again, reduce scope (schema/table count), or increase server timeout."
+    if "json" in e and ("invalid" in e or "decode" in e):
+        return "Remote API response format is unexpected. Ensure endpoint returns JSON rows for `{\"query\": \"...\"}` payload."
+    if "403" in e or "forbidden" in e:
+        return "Access denied by remote service. Check token/permissions/IP allow-list."
+    if "404" in e:
+        return "Endpoint path is wrong. Recheck the remote URL route."
+    if "500" in e:
+        return "Remote server internal error. Retry later or inspect upstream service logs."
+    return "Check URL, credentials, DB access policy, and remote API response shape. If it persists, share the exact error text."
+
+
+def _cfg_notify_error_with_help(err: str, prefix: str = "Operation failed") -> None:
+    err_text = _detail_text(err, "Unknown error")
+    msg = f"{prefix}: {err_text}"
+    hint = _cfg_troubleshoot_hint(err_text)
+    _cfg_notify("error", msg)
+    _cfg_notify("warning", f"Troubleshooter: {hint}")
+
+
+def _detail_text(payload: Any, default: str) -> str:
+    """Extract readable error detail from API payload shapes (dict/list/str)."""
+    if isinstance(payload, dict):
+        return str(payload.get("detail") or payload.get("message") or default)
+    if isinstance(payload, list):
+        parts: list[str] = []
+        for item in payload[:6]:
+            if isinstance(item, dict):
+                loc = item.get("loc")
+                msg = item.get("msg") or item.get("detail") or item
+                if isinstance(loc, list):
+                    parts.append(f"{'.'.join(str(x) for x in loc)}: {msg}")
+                else:
+                    parts.append(str(msg))
+            else:
+                parts.append(str(item))
+        return "; ".join(parts) if parts else default
+    if isinstance(payload, str):
+        return payload
+    return default
+
+
+def _render_cfg_notifications() -> None:
+    """Render floating notifications; each auto-hides after 120 seconds."""
+    q = list(st.session_state.get("_cfg_notifications") or [])
+    if not q:
+        return
+    now = time.time()
+    keep = [n for n in q if now - float(n.get("created_at") or 0) < 120]
+    st.session_state["_cfg_notifications"] = keep
+    if not keep:
+        return
+    st.markdown(
+        """
+        <style>
+        .cfg-toast-wrap { position: fixed; top: 0.95rem; right: 1rem; z-index: 9999; width: min(420px, 92vw); }
+        .cfg-toast { border-radius: 10px; padding: 0.62rem 0.78rem; margin-bottom: 0.5rem; border: 1px solid transparent;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16); font-size: 0.9rem; line-height: 1.35; }
+        .cfg-toast--success { background: #ecfdf5; border-color: #10b981; color: #065f46; }
+        .cfg-toast--warning, .cfg-toast--error { background: #fef2f2; border-color: #ef4444; color: #991b1b; }
+        .cfg-toast--info { background: #eff6ff; border-color: #60a5fa; color: #1e3a8a; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    html_parts = ['<div class="cfg-toast-wrap">']
+    for n in keep:
+        nid = html.escape(str(n.get("id") or ""))
+        lvl = html.escape(str(n.get("level") or "info"))
+        msg = html.escape(str(n.get("message") or ""))
+        html_parts.append(
+            f'<div id="cfg-toast-{nid}" class="cfg-toast cfg-toast--{lvl}">{msg}</div>'
+            f"<script>setTimeout(function(){{var e=document.getElementById('cfg-toast-{nid}'); if(e) e.remove();}}, 120000);</script>"
+        )
+    html_parts.append("</div>")
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
+
+
+def _cfg_source_options() -> tuple[str, str, str]:
+    return (
+        "Local DB connection",
+        "Server connection",
+        "Remote URL connection",
+    )
+
+
+def _apply_cfg_source_selection(source_label: str) -> None:
+    # Current redesigned Configuration keeps a single credentials workflow.
+    st.session_state.conn_source = "live"
+
+
+def _render_cfg_source_selector() -> str:
+    """Render a redesigned connection-type selector card."""
+    _cfg_opts = _cfg_source_options()
+    if st.session_state.get("cfg_schema_source") not in _cfg_opts:
+        st.session_state["cfg_schema_source"] = _cfg_opts[0]
+    _current = st.session_state.get("cfg_schema_source") or _cfg_opts[0]
+    _active_idx = _cfg_opts.index(_current) if _current in _cfg_opts else 0
+    _style_block = """
+        <style>
+        section.main .cfg-source-card {
+            border: 1px solid #e5e7eb !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
+            padding: 0.85rem !important;
+            margin: 0.2rem 0 0.6rem 0 !important;
+        }
+        section.main .cfg-source-card-title {
+            margin: 0 0 0.5rem 0 !important;
+            font-size: 0.72rem !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.08em !important;
+            color: #6b7280 !important;
+        }
+        section.main .st-key-cfg_source_btn_0,
+        section.main .st-key-cfg_source_btn_1,
+        section.main .st-key-cfg_source_btn_2 {
+            margin: 0 0 0.35rem 0 !important;
+        }
+        section.main .st-key-cfg_source_btn_0 [data-baseweb="button"],
+        section.main .st-key-cfg_source_btn_1 [data-baseweb="button"],
+        section.main .st-key-cfg_source_btn_2 [data-baseweb="button"] {
+            min-height: 2.25rem !important;
+            justify-content: flex-start !important;
+            padding-left: 0.7rem !important;
+            border-radius: 8px !important;
+            background: #ffffff !important;
+            border: 1px solid #e5e7eb !important;
+            box-shadow: none !important;
+        }
+        section.main .st-key-cfg_source_btn_0 [data-baseweb="button"] p,
+        section.main .st-key-cfg_source_btn_1 [data-baseweb="button"] p,
+        section.main .st-key-cfg_source_btn_2 [data-baseweb="button"] p {
+            font-size: 0.88rem !important;
+            font-weight: 500 !important;
+            margin: 0 !important;
+            color: #374151 !important;
+            text-align: left !important;
+            width: 100% !important;
+        }
+        section.main .st-key-cfg_source_btn_0 [data-baseweb="button"]:hover,
+        section.main .st-key-cfg_source_btn_1 [data-baseweb="button"]:hover,
+        section.main .st-key-cfg_source_btn_2 [data-baseweb="button"]:hover {
+            border-color: #d1d5db !important;
+            background: #fafafa !important;
+        }
+        section.main .st-key-cfg_source_btn___ACTIVE__ [data-baseweb="button"] {
+            border: 1.5px solid #7c3aed !important;
+            background: #f5f3ff !important;
+        }
+        section.main .st-key-cfg_source_btn___ACTIVE__ [data-baseweb="button"] p {
+            color: #1f2937 !important;
+            font-weight: 600 !important;
+        }
+        </style>
+        """
+    st.markdown(_style_block.replace("__ACTIVE__", str(_active_idx)), unsafe_allow_html=True)
+    st.markdown('<div class="cfg-source-card"><p class="cfg-source-card-title">Connection Type</p>', unsafe_allow_html=True)
+    for _ix, _opt in enumerate(_cfg_opts):
+        _is_active = _current == _opt
+        _prefix = "◉" if _is_active else "○"
+        _label = f"{_prefix}  {_opt}"
+        if st.button(
+            _label,
+            key=f"cfg_source_btn_{_ix}",
+            use_container_width=True,
+            type="secondary",
+        ):
+            st.session_state["cfg_schema_source"] = _opt
+            _on_configuration_source_changed()
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+    return _current
 
 
 def _render_configuration_connection_main(sid: str) -> None:
-    """Connect / upload / activate UI (main column). Source is chosen in the sidebar."""
+    """Connect / upload / activate UI (main column)."""
     if st.session_state.conn_source == "file":
         _jr = st.session_state.pop("schema_job_result", None)
         if _jr and isinstance(_jr, dict):
@@ -519,7 +853,14 @@ def _render_configuration_connection_main(sid: str) -> None:
                 st.text_input("Bastion / SSH host", key="conn_ssh_host")
                 st.text_input("SSH port", key="conn_ssh_port")
                 st.text_input("SSH username (default: same as database user, if left empty here)", key="conn_ssh_user")
-                st.text_area("SSH private key (PEM)", height=100, key="conn_ssh_key")
+                _f_embed = st.file_uploader(
+                    "Upload private key",
+                    type=None,
+                    key="file_embed_ssh_key_upload",
+                    help="PEM or OpenSSH private key. Fills the box below; you can still paste instead.",
+                )
+                _apply_uploaded_ssh_key_to_session(_f_embed)
+                st.text_area("SSH private key (PEM) — or paste", height=100, key="conn_ssh_key")
                 st.text_input("Key passphrase (if any)", type="password", key="conn_ssh_key_pass")
             if st.button("Connect", key="btn_connect_file_upload", type="primary"):
                 body = _db_connect_request_body()
@@ -942,48 +1283,475 @@ def _render_configuration_connection_main(sid: str) -> None:
                 st.session_state.schema_upload_need_connection_help = False
                 st.rerun()
     else:
-        st.caption(
-            "**Connect database** — enter where PostgreSQL listens. If you use SSH, host/port are "
-            "as seen from the **bastion** (e.g. `127.0.0.1` or a private IP behind the jump host)."
-        )
-        st.session_state.conn_host = st.text_input("Host", value=st.session_state.conn_host, key="in_host")
-        st.session_state.conn_port = st.text_input("Port", value=st.session_state.conn_port or "5432", key="in_port")
-        st.session_state.conn_user = st.text_input("Username", value=st.session_state.conn_user, key="in_user")
-        st.session_state.conn_pass = st.text_input("Password", type="password", value=st.session_state.conn_pass, key="in_pass")
-        with st.expander("SSH tunnel (optional — jump/bastion host)"):
-            st.checkbox(
-                "Connect through SSH (private key)",
-                value=bool(st.session_state.get("conn_use_ssh")),
-                key="conn_use_ssh",
-            )
-            st.text_input("Bastion / SSH host", key="conn_ssh_host")
-            st.text_input("SSH port", key="conn_ssh_port")
-            st.text_input(
-                "SSH username (default: same as database user, if left empty here)",
-                key="conn_ssh_user",
-            )
-            st.text_area(
-                "SSH private key (PEM — paste full key, including headers)",
-                height=120,
-                key="conn_ssh_key",
-            )
-            st.text_input("Key passphrase (if any)", type="password", key="conn_ssh_key_pass")
-        if st.button("Connect & activate", type="primary"):
-            body = _db_connect_request_body()
-            try:
-                r = requests.post(f"{API_URL}/db/connect", json=body, timeout=90)
-                info, jerr = safe_response_payload(r)
-                if jerr:
-                    st.error(jerr)
-                elif r.ok and isinstance(info, dict):
-                    st.session_state.db_list = info.get("databases") or []
-                    st.session_state.pg_session_connected = True
-                    _sfx = " (via SSH tunnel)" if info.get("via_ssh") else ""
-                    st.success(f"Connected — {len(st.session_state.db_list)} database(s) listed.{_sfx}")
-                else:
-                    st.error((info or {}).get("detail", "Connect failed") if isinstance(info, dict) else "Connect failed")
-            except Exception as ex:
-                st.error(str(ex))
+        _left_cfg, _right_cfg = st.columns(2, gap="large")
+        with _left_cfg:
+            _src = _render_cfg_source_selector()
+            _apply_cfg_source_selection(_src)
+            if _src == "Server connection":
+                st.markdown(
+                    "<p class='cfg-source-card-title' style='margin-top:0.7rem !important'>Server mode</p>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "Set **PostgreSQL** first, then **SSH** directly underneath on the right — "
+                    "then use **Connect to server** (same order as a typical SQL client with a jump host)."
+                )
+            else:
+                st.session_state.conn_use_ssh = False
+        with _right_cfg:
+            if _src == "Remote URL connection":
+                st.markdown(
+                    "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Remote URL Connection</p>",
+                    unsafe_allow_html=True,
+                )
+                st.caption("Paste your remote SQL API endpoint. The app will fetch database, schema, table list and counts.")
+                st.text_input(
+                    "Remote SQL API URL",
+                    key="remote_conn_url",
+                    placeholder="https://api.example.com",
+                )
+                if st.button("Fetch remote metadata", type="primary", use_container_width=True, key="remote_fetch_metadata_btn"):
+                    _ru = (st.session_state.get("remote_conn_url") or "").strip()
+                    if not _ru:
+                        _cfg_notify("error", "Paste remote URL first.")
+                    else:
+                        try:
+                            _db_rows = _fetch_remote_rows(_ru, "SELECT current_database() AS database_name")
+                            _db_name = "remote_database"
+                            if _db_rows and isinstance(_db_rows[0], dict):
+                                _db_name = str(
+                                    _db_rows[0].get("database_name")
+                                    or _db_rows[0].get("current_database")
+                                    or list(_db_rows[0].values())[0]
+                                    or "remote_database"
+                                )
+                            _sch_rows = _fetch_remote_rows(
+                                _ru,
+                                "SELECT schema_name FROM information_schema.schemata "
+                                "WHERE schema_name NOT IN ('information_schema') "
+                                "AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name",
+                            )
+                            _schemas = [
+                                str(r.get("schema_name") or r.get("schema") or "").strip()
+                                for r in _sch_rows
+                                if isinstance(r, dict)
+                            ]
+                            _schemas = [s for s in _schemas if s]
+                            st.session_state.remote_conn_db_list = [_db_name]
+                            st.session_state.remote_conn_schema_list = _schemas
+                            st.session_state.remote_conn_selected_db = _db_name
+                            st.session_state.remote_conn_selected_schema = _schemas[0] if _schemas else ""
+                            st.session_state.remote_conn_table_list = []
+                            st.session_state.remote_conn_selected_tables = []
+                            _cfg_notify("success", f"Remote metadata fetched: {len(_schemas)} schema(s).")
+                        except Exception as ex:
+                            _cfg_notify_error_with_help(str(ex), "Remote metadata fetch failed")
+            elif _src == "Server connection":
+                with st.container(border=True):
+                    st.caption("**1 · PostgreSQL** — where the server listens *after* you SSH in (often `127.0.0.1`).")
+                    st.caption("Use the **database account password** here. SSH is configured in step 2 below.")
+                    _hcol, _pcol = st.columns([4, 1], gap="small")
+                    with _hcol:
+                        st.session_state.conn_host = st.text_input(
+                            "Host",
+                            value=st.session_state.conn_host,
+                            key="in_host",
+                            placeholder="127.0.0.1",
+                        )
+                    with _pcol:
+                        st.session_state.conn_port = st.text_input(
+                            "Port",
+                            value=st.session_state.conn_port or "5432",
+                            key="in_port",
+                            placeholder="5432",
+                        )
+                    st.session_state.conn_user = st.text_input(
+                        "Username",
+                        value=st.session_state.conn_user,
+                        key="in_user",
+                        placeholder="database user (e.g. cocreaduser)",
+                    )
+                    st.session_state.conn_pass = st.text_input(
+                        "Password",
+                        type="password",
+                        value=st.session_state.conn_pass,
+                        key="in_pass",
+                        placeholder="database password",
+                    )
+                    st.session_state.file_db_name = st.text_input(
+                        "Database name",
+                        value=st.session_state.file_db_name,
+                        key="cfg_dbname_main",
+                        placeholder="e.g. medicine",
+                    )
+                with st.container(border=True):
+                    st.caption("**2 · SSH jump host** — optional; use when you reach Postgres only through a bastion.")
+                    st.caption(
+                        "Auth is with a **private key** (PEM), not an SSH password. "
+                        "Host/port here are the **bastion** (e.g. `10.100.0.2:22` as `ubuntu`)."
+                    )
+                    st.checkbox("Connect through SSH tunnel", key="conn_use_ssh")
+                    if st.session_state.conn_use_ssh:
+                        _s1, _s2 = st.columns(2, gap="small")
+                        with _s1:
+                            st.text_input("Bastion / server (IP or hostname)", key="conn_ssh_host", placeholder="e.g. 10.100.0.2")
+                        with _s2:
+                            st.text_input("SSH port", key="conn_ssh_port", placeholder="22")
+                        st.text_input("SSH username", key="conn_ssh_user", placeholder="e.g. ubuntu")
+                        st.caption("Upload a key file **or** paste in the box — an upload replaces the box.")
+                        _f_srv = st.file_uploader(
+                            "Private key file",
+                            type=None,
+                            key="cfg_server_ssh_key_upload",
+                            help="e.g. id_rsa, id_ed25519, or a .pem. Must be UTF-8 text (standard PEM/OpenSSH).",
+                        )
+                        _apply_uploaded_ssh_key_to_session(_f_srv)
+                        st.text_area(
+                            "SSH private key (PEM) — or paste",
+                            height=120,
+                            key="conn_ssh_key",
+                            placeholder="-----BEGIN … PRIVATE KEY----- (paste full key)",
+                        )
+                        st.text_input("Key passphrase (if your key is encrypted)", type="password", key="conn_ssh_key_pass")
+                if st.button("Connect to server", type="primary", use_container_width=True, key="btn_cfg_connect_server"):
+                    _run_configuration_db_connect()
+            elif _src == "Local DB connection":
+                st.markdown(
+                    "<p class='cfg-source-card-title' style='margin-top:0.2rem !important'>Database credentials</p>",
+                    unsafe_allow_html=True,
+                )
+                st.caption("Local DB: enter host, username, and password, then connect.")
+                st.session_state.conn_host = st.text_input(
+                    "Host",
+                    value=st.session_state.conn_host,
+                    key="in_host",
+                    placeholder="localhost or IP",
+                )
+                st.session_state.conn_port = "5432"
+                st.session_state.conn_user = st.text_input(
+                    "Username",
+                    value=st.session_state.conn_user,
+                    key="in_user",
+                    placeholder="postgres",
+                )
+                st.session_state.conn_pass = st.text_input(
+                    "Password",
+                    type="password",
+                    value=st.session_state.conn_pass,
+                    key="in_pass",
+                )
+                if st.button("Connection", type="primary", use_container_width=True, key="btn_cfg_connect_local"):
+                    _run_configuration_db_connect()
+
+        if _src == "Remote URL connection":
+            _rdb = list(st.session_state.get("remote_conn_db_list") or [])
+            _rsc = list(st.session_state.get("remote_conn_schema_list") or [])
+            if _rdb:
+                st.selectbox(
+                    "Selected DB",
+                    options=_rdb,
+                    key="remote_conn_selected_db",
+                )
+            if _rsc:
+                st.selectbox(
+                    "Selected schema",
+                    options=_rsc,
+                    key="remote_conn_selected_schema",
+                )
+                if st.button("Fetch table list and counts", key="remote_fetch_tables_btn"):
+                    _ru = (st.session_state.get("remote_conn_url") or "").strip()
+                    _sch = (st.session_state.get("remote_conn_selected_schema") or "").strip()
+                    try:
+                        with st.spinner("Fetching table list and row counts from remote URL..."):
+                            _sch_lit = _sch.replace("'", "''")
+                            _tbl_rows = _fetch_remote_rows(
+                                _ru,
+                                "SELECT table_name FROM information_schema.tables "
+                                f"WHERE table_schema = '{_sch_lit}' AND table_type='BASE TABLE' ORDER BY table_name",
+                            )
+                            _tables = [
+                                str(r.get("table_name") or r.get("table") or "").strip()
+                                for r in _tbl_rows
+                                if isinstance(r, dict)
+                            ]
+                            _tables = [t for t in _tables if t]
+                            _with_counts: list[dict[str, Any]] = []
+                            for _t in _tables:
+                                _cnt = _fetch_remote_table_count(_ru, _sch, _t)
+                                _with_counts.append({"schema": _sch, "table": _t, "count": int(_cnt or 0)})
+                        st.session_state.remote_conn_table_list = _with_counts
+                        st.session_state.remote_conn_selected_tables = [f"{x['schema']}.{x['table']}" for x in _with_counts]
+                        st.session_state.remote_conn_counts_summary = {
+                            "db_count": len(_rdb),
+                            "schema_count": len(_rsc),
+                            "table_count": len(_with_counts),
+                            "row_count_total": int(sum(int(x.get("count") or 0) for x in _with_counts)),
+                        }
+                        _cfg_notify("success", f"Fetched {len(_with_counts)} table(s) with counts.")
+                    except Exception as ex:
+                        _cfg_notify_error_with_help(str(ex), "Could not fetch table list")
+            _sum = st.session_state.get("remote_conn_counts_summary") or {}
+            if _sum:
+                _m1, _m2, _m3, _m4 = st.columns(4)
+                _m1.metric("DB count", int(_sum.get("db_count") or 0))
+                _m2.metric("Schema count", int(_sum.get("schema_count") or 0))
+                _m3.metric("Table count", int(_sum.get("table_count") or 0))
+                _m4.metric("Data row count", int(_sum.get("row_count_total") or 0))
+            _rt = list(st.session_state.get("remote_conn_table_list") or [])
+            if _rt:
+                _opts = [f"{x['schema']}.{x['table']} ({x['count']})" for x in _rt]
+                _pre = st.session_state.get("remote_conn_selected_tables") or []
+                _label_to_key = {f"{x['schema']}.{x['table']} ({x['count']})": f"{x['schema']}.{x['table']}" for x in _rt}
+                _pre_labels = [l for l, k in _label_to_key.items() if k in _pre]
+                _picked_labels = st.multiselect(
+                    "Selected table",
+                    options=_opts,
+                    default=_pre_labels,
+                    key="remote_conn_selected_tables_labels",
+                )
+                st.session_state.remote_conn_selected_tables = [_label_to_key[l] for l in _picked_labels if l in _label_to_key]
+                st.radio(
+                    "Load mode",
+                    options=["Load limited data", "Load all data"],
+                    key="remote_conn_load_mode",
+                    horizontal=True,
+                )
+                if st.session_state.get("remote_conn_load_mode") == "Load limited data":
+                    st.number_input(
+                        "Row limit",
+                        min_value=1,
+                        max_value=100000,
+                        value=int(st.session_state.get("remote_conn_row_limit") or remote_sync_default_row_limit()),
+                        key="remote_conn_row_limit",
+                    )
+                _a1, _a2 = st.columns(2)
+                with _a1:
+                    _act_alert = st.empty()
+                    if st.button("Activate selection", type="primary", use_container_width=True, key="remote_activate_btn"):
+                        _picked = list(st.session_state.get("remote_conn_selected_tables") or [])
+                        if not _picked:
+                            _msg = "Select at least one table to activate."
+                            _act_alert.warning(_msg)
+                            _cfg_notify("warning", _msg)
+                        else:
+                            _db_raw = st.session_state.get("remote_conn_selected_db")
+                            if isinstance(_db_raw, list):
+                                _db = str(_db_raw[0]).strip() if _db_raw else ""
+                            else:
+                                _db = str(_db_raw or "").strip()
+                            _table_refs: list[dict[str, str]] = []
+                            for p in _picked:
+                                if isinstance(p, list):
+                                    p = ".".join(str(x) for x in p if str(x).strip())
+                                p = str(p or "").strip()
+                                if not p:
+                                    continue
+                                if "." in p:
+                                    _sch, _tbl = p.split(".", 1)
+                                else:
+                                    _sch, _tbl = (st.session_state.get("remote_conn_selected_schema") or "public"), p
+                                _sch = str(_sch or "").strip()
+                                _tbl = str(_tbl or "").strip()
+                                if not _sch or not _tbl:
+                                    continue
+                                _table_refs.append({"schema": _sch, "name": _tbl})
+                            if not _table_refs:
+                                _cfg_notify("warning", "No valid table identifiers found in selection.")
+                                return
+                            try:
+                                _status = st.empty()
+                                _bar = st.progress(0)
+                                # Remote URL mode should always use remote-schema activation path,
+                                # independent of any previous local/server connection state.
+                                _is_live_pool = False
+                                if _is_live_pool:
+                                    _status.info("Switching active database...")
+                                    _bar.progress(15)
+                                    r_use = requests.post(
+                                        f"{API_URL}/db/use-database",
+                                        json={"session_id": sid, "database": _db},
+                                        timeout=45,
+                                    )
+                                    use_body, use_err = safe_response_payload(r_use)
+                                    if use_err:
+                                        _act_alert.error(f"Activation failed: {use_err}")
+                                        _cfg_notify_error_with_help(str(use_err), "Activation failed")
+                                        _bar.empty()
+                                        _status.empty()
+                                        return
+                                    if not r_use.ok:
+                                        _e = _detail_text(use_body, "Could not switch database.")
+                                        _act_alert.error(f"Activation failed: {_e}")
+                                        _cfg_notify_error_with_help(
+                                            _e,
+                                            "Activation failed",
+                                        )
+                                        _bar.empty()
+                                        _status.empty()
+                                        return
+                                    _status.info("Preparing activation payload...")
+                                    _bar.progress(35)
+                                    r_act = requests.post(
+                                        f"{API_URL}/db/activate",
+                                        json={
+                                            "session_id": sid,
+                                            "database": _db,
+                                            "tables": _table_refs,
+                                        },
+                                        timeout=120,
+                                    )
+                                else:
+                                    # Pure Remote URL mode: build schema JSON from remote metadata and activate via file path.
+                                    _status.info("Building schema from remote metadata...")
+                                    _bar.progress(20)
+                                    _ru = (st.session_state.get("remote_conn_url") or "").strip()
+                                    _schema_payload = {"database_name": _db, "tables": {}}
+                                    for tr in _table_refs:
+                                        _sch = tr.get("schema", "")
+                                        _tbl = tr.get("name", "")
+                                        _sch_lit = str(_sch).replace("'", "''")
+                                        _tbl_lit = str(_tbl).replace("'", "''")
+                                        _col_rows = _fetch_remote_rows(
+                                            _ru,
+                                            "SELECT column_name, data_type FROM information_schema.columns "
+                                            f"WHERE table_schema = '{_sch_lit}' AND table_name = '{_tbl_lit}' "
+                                            "ORDER BY ordinal_position",
+                                            timeout=60,
+                                        )
+                                        _cols = []
+                                        for c in _col_rows:
+                                            if not isinstance(c, dict):
+                                                continue
+                                            _cn = str(c.get("column_name") or "").strip()
+                                            if not _cn:
+                                                continue
+                                            _cols.append(
+                                                {
+                                                    "column_name": _cn,
+                                                    "data_type": str(c.get("data_type") or "text"),
+                                                }
+                                            )
+                                        _schema_payload["tables"][f"{_sch}.{_tbl}"] = {
+                                            "schema_name": _sch,
+                                            "table_name": _tbl,
+                                            "columns": _cols,
+                                        }
+                                    _status.info("Activating remote schema...")
+                                    _bar.progress(65)
+                                    _bytes = json.dumps(_schema_payload).encode("utf-8")
+                                    _row_mode = st.session_state.get("remote_conn_load_mode") or "Load limited data"
+                                    _row_limit = (
+                                        "0"
+                                        if _row_mode == "Load all data"
+                                        else str(int(st.session_state.get("remote_conn_row_limit") or remote_sync_default_row_limit()))
+                                    )
+                                    r_act = requests.post(
+                                        f"{API_URL}/schema/from-file",
+                                        data={
+                                            "session_id": sid,
+                                            "database_name": _db or "remote_database",
+                                            "keep_connection": "false",
+                                            "materialize": "false",
+                                            "remote_data_url": _ru,
+                                            "remote_row_limit": _row_limit,
+                                        },
+                                        files={"file": ("remote_schema.json", _bytes, "application/json")},
+                                        timeout=180,
+                                    )
+                                _status.info("Validating activation response...")
+                                _bar.progress(80)
+                                info, jerr = safe_response_payload(r_act)
+                                if jerr:
+                                    _act_alert.error(f"Activation failed: {jerr}")
+                                    _cfg_notify_error_with_help(str(jerr), "Activation failed")
+                                elif r_act.status_code == 422 and _is_live_pool:
+                                    # Fallback: rebuild table refs from backend metadata and retry once.
+                                    _status.info("Normalizing selected tables and retrying activation...")
+                                    _bar.progress(88)
+                                    _schemas = sorted({x["schema"] for x in _table_refs})
+                                    r_tbl = requests.get(
+                                        f"{API_URL}/db/tables",
+                                        params={"session_id": sid, "schemas": ",".join(_schemas)},
+                                        timeout=90,
+                                    )
+                                    tbl_body, tbl_err = safe_response_payload(r_tbl)
+                                    if tbl_err or not r_tbl.ok:
+                                        _e = str(tbl_err or _detail_text(tbl_body, "Could not load tables for retry."))
+                                        _act_alert.error(f"Activation failed: {_e}")
+                                        _cfg_notify_error_with_help(
+                                            _e,
+                                            "Activation failed",
+                                        )
+                                    else:
+                                        flat = (tbl_body or {}).get("flat") if isinstance(tbl_body, dict) else []
+                                        desired = {f"{x['schema']}.{x['name']}" for x in _table_refs}
+                                        parts_retry = [
+                                            {"schema": str(t.get("schema") or "").strip(), "name": str(t.get("name") or "").strip()}
+                                            for t in (flat or [])
+                                            if f"{str(t.get('schema') or '').strip()}.{str(t.get('name') or '').strip()}" in desired
+                                        ]
+                                        if not parts_retry:
+                                            parts_retry = [
+                                                {"schema": str(t.get("schema") or "").strip(), "name": str(t.get("name") or "").strip()}
+                                                for t in (flat or [])
+                                                if str(t.get("schema") or "").strip() and str(t.get("name") or "").strip()
+                                            ]
+                                        r_act2 = requests.post(
+                                            f"{API_URL}/db/activate",
+                                            json={"session_id": sid, "database": _db, "tables": parts_retry},
+                                            timeout=max(180, min(1200, 60 + len(parts_retry) * 3)),
+                                        )
+                                        info2, jerr2 = safe_response_payload(r_act2)
+                                        if jerr2:
+                                            _act_alert.error(f"Activation failed: {jerr2}")
+                                            _cfg_notify_error_with_help(str(jerr2), "Activation failed")
+                                        elif r_act2.ok:
+                                            st.session_state.nl_ready = True
+                                            st.session_state.pg_session_connected = True
+                                            st.session_state.file_db_name = _db
+                                            st.session_state.show_chat_invite = True
+                                            _bar.progress(100)
+                                            _status.success("Activation complete.")
+                                            _cfg_notify("success", f"Activated {_db} with {len(parts_retry)} table(s).")
+                                            st.rerun()
+                                        else:
+                                            _e2 = _detail_text(info2, "Activation failed")
+                                            _act_alert.error(f"Activation failed: {_e2}")
+                                            _cfg_notify_error_with_help(
+                                                _e2,
+                                                "Activation failed",
+                                            )
+                                elif r_act.ok:
+                                    st.session_state.nl_ready = True
+                                    st.session_state.pg_session_connected = True
+                                    st.session_state.file_db_name = _db
+                                    st.session_state.show_chat_invite = True
+                                    _bar.progress(100)
+                                    _status.success("Activation complete.")
+                                    _cfg_notify("success", f"Activated {_db} with {len(_picked)} table(s).")
+                                    st.rerun()
+                                else:
+                                    _e = _detail_text(info, "Activation failed")
+                                    _act_alert.error(f"Activation failed: {_e}")
+                                    _cfg_notify_error_with_help(
+                                        _e,
+                                        "Activation failed",
+                                    )
+                                _bar.empty()
+                                _status.empty()
+                            except Exception as ex:
+                                _act_alert.error(f"Activate failed: {ex}")
+                                _cfg_notify_error_with_help(str(ex), "Activate failed")
+                with _a2:
+                    _can_chat = bool(st.session_state.get("nl_ready"))
+                    if st.button(
+                        "Go to Chat →",
+                        use_container_width=True,
+                        key="remote_go_chat_btn",
+                        disabled=not _can_chat,
+                    ):
+                        st.switch_page("pages/project_chat.py")
+            return
 
         if st.session_state.db_list:
             st.selectbox(
@@ -1000,18 +1768,18 @@ def _render_configuration_connection_main(sid: str) -> None:
                     )
                     info, jerr = safe_response_payload(r)
                     if jerr:
-                        st.error(jerr)
+                        _cfg_notify("error", jerr)
                     elif r.ok:
                         rs = requests.get(f"{API_URL}/db/schemas", params={"session_id": sid}, timeout=45)
                         if rs.ok:
                             st.session_state.schema_list = rs.json().get("schemas") or []
-                            st.success("Database opened — pick schema(s) and load tables.")
+                            _cfg_notify("success", "Database opened — pick schema(s) and load tables.")
                         else:
-                            st.error("Could not list schemas.")
+                            _cfg_notify("error", "Could not list schemas.")
                     else:
-                        st.error((info or {}).get("detail", "Failed") if isinstance(info, dict) else "Failed")
+                        _cfg_notify("error", (info or {}).get("detail", "Failed") if isinstance(info, dict) else "Failed")
                 except Exception as ex:
-                    st.error(str(ex))
+                    _cfg_notify("error", str(ex))
 
         if st.session_state.schema_list:
             _sch_opts = st.session_state.schema_list
@@ -1052,6 +1820,11 @@ def _render_configuration_connection_main(sid: str) -> None:
                 st.session_state.sel_table_labels = []
 
             st.markdown("**Tables for NL→SQL**")
+            _ts = st.text_input(
+                "Search tables",
+                key="table_search_nl",
+                placeholder="Type letters — matching tables appear below instantly (e.g. cho, sales, store)",
+            )
             st.caption(
                 f"**{len(_labels):,}** table(s) in this catalog. "
                 "**Select matching** adds only names that match the search. "
@@ -1077,13 +1850,44 @@ def _render_configuration_connection_main(sid: str) -> None:
                     )
 
             st.markdown("**Add to selection**")
-            _ts = st.text_input(
-                "Search tables",
-                key="table_search_nl",
-                placeholder="Type letters — matching tables appear below instantly (e.g. cho, sales, store)",
-            )
             _qq = (_ts or "").strip().lower()
-            _visible = [L for L in _labels if _qq in L.lower()] if _qq else []
+            _qq_norm = re.sub(r"[^a-z0-9]+", "", _qq)
+
+            def _table_search_suggestions(query: str, labels: list[str]) -> list[str]:
+                q = (query or "").strip().lower()
+                q_norm = re.sub(r"[^a-z0-9]+", "", q)
+                if len(q_norm) < 2:
+                    return []
+                token_pool: set[str] = set()
+                label_pool: set[str] = set()
+                for lbl in labels:
+                    ll = lbl.lower()
+                    label_pool.add(ll)
+                    _parts = re.split(r"[^a-zA-Z0-9]+", lbl.lower())
+                    for p in _parts:
+                        if len(p) >= 2:
+                            token_pool.add(p)
+                starts_token = sorted([t for t in token_pool if t.startswith(q_norm)])[:6]
+                starts_label = sorted([l for l in label_pool if q in l or q_norm in re.sub(r"[^a-z0-9]+", "", l)])[:6]
+                close = get_close_matches(q_norm, list(token_pool), n=6, cutoff=0.5)
+                merged: list[str] = []
+                for s in starts_token + starts_label + close:
+                    if s not in merged:
+                        merged.append(s)
+                return merged[:10]
+
+            _visible = (
+                [
+                    L
+                    for L in _labels
+                    if (
+                        (_qq and _qq in L.lower())
+                        or (_qq_norm and _qq_norm in re.sub(r"[^a-z0-9]+", "", L.lower()))
+                    )
+                ]
+                if (_qq or _qq_norm)
+                else []
+            )
             st.caption("Results update as you type.")
 
             if _qq:
@@ -1983,6 +2787,58 @@ def _chat_recent_user_prompts() -> list[str]:
     return out
 
 
+def _chat_recent_user_prompt_groups(max_items: int = 200) -> list[tuple[str, list[str]]]:
+    """
+    Build sidebar history groups like ChatGPT (Today, Yesterday, dated buckets),
+    deduping repeated prompts while keeping the newest occurrence.
+    """
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+
+    def _turn_date(turn: dict) -> datetime.date | None:
+        raw = (
+            turn.get("created_at")
+            or turn.get("timestamp")
+            or turn.get("time")
+            or ""
+        )
+        s = str(raw or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except Exception:
+            return None
+
+    grouped: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    taken = 0
+    for turn in reversed(st.session_state.get("chat_history") or []):
+        if turn.get("role") != "user":
+            continue
+        txt = (turn.get("content") or "").strip()
+        if not txt:
+            continue
+        key = txt.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        d = _turn_date(turn)
+        if d == today:
+            bucket = f"Today · {today.strftime('%d %b %Y')}"
+        elif d == yesterday:
+            bucket = f"Yesterday · {yesterday.strftime('%d %b %Y')}"
+        elif d:
+            bucket = d.strftime("%d %b %Y")
+        else:
+            bucket = "Earlier"
+        grouped.setdefault(bucket, []).append(txt)
+        taken += 1
+        if taken >= max_items:
+            break
+    return list(grouped.items())
+
+
 def run() -> None:
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
@@ -2031,8 +2887,14 @@ def run() -> None:
     for _k, _v in _DB_DEFAULTS.items():
         if _k not in st.session_state:
             st.session_state[_k] = _v
-    if st.session_state.get("cfg_schema_source") == "Live PostgreSQL":
-        st.session_state["cfg_schema_source"] = "Connect database (PostgreSQL)"
+    _legacy_cfg_source_map = {
+        "Live PostgreSQL": "Local DB connection",
+        "Connect database (PostgreSQL)": "Local DB connection",
+        "Upload schema JSON": "Remote URL connection",
+    }
+    _cfg_src = st.session_state.get("cfg_schema_source")
+    if _cfg_src in _legacy_cfg_source_map:
+        st.session_state["cfg_schema_source"] = _legacy_cfg_source_map[_cfg_src]
     st.session_state.setdefault("chat_history", [])
     st.session_state.setdefault("suggested_prompts", [])
     st.session_state.setdefault("prompts_last_query", "")
@@ -2092,41 +2954,41 @@ def run() -> None:
     # ── Sidebar: Chat only — navigation + account + clear (no connection / schema / query defaults) ─
     if workbench_page() == "chat":
         with st.sidebar:
-            _render_workbench_sidebar_brand_and_links()
-            st.markdown('<p class="sqg-chat-sec" style="margin-top:0.35rem;">Query options</p>', unsafe_allow_html=True)
-            st.caption("Session — tables (top-K) and row preview")
-            st.session_state.top_k = st.slider(
-                "Tables to retrieve (top-K)", 1, 10, int(st.session_state.top_k or 3), key="ch_topk"
-            )
-            _p = find_project_by_id(get_active_project_id() or "")
-            _pname = (_p or {}).get("name") or "—"
-            _pcc = (str(((_p or {}).get("client_code") or ""))).strip()
-            _comp = get_tenant_by_id((_p or {}).get("tenant_id") or "")
-            _cn = (_comp or {}).get("name") or ""
+            _auth = st.session_state.auth_user or {}
+            _uname = str(_auth.get("username", "user") or "user")
+            _init = (html.escape(_uname[:1] or "?")).upper()
+            _display = html.escape(_uname)
             st.markdown(
-                "<p class='sqg-chat-sec' style='margin-top:0.5rem;'>Context</p>",
+                f"""
+                <div class="sqg-sb-top" style="display:flex;align-items:center;gap:0.5rem">
+                  <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
+                    <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
+                      <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
+                      <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
+                      <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
+                    </span>
+                  </span>
+                  <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
+                </div>
+                <div class="sqg-sb-user">
+                  <div class="sqg-sb-av">{_init}</div>
+                  <div>
+                    <div class="sqg-sb-name">{_display}</div>
+                    <div class="sqg-sb-role">Member</div>
+                  </div>
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
-            _chips = _chat_context_chips(_pname, _pcc, _cn) or [(_pname or "project")[:10].lower(), "dev", "workspace"][:3]
-            _on_i = 1 if len(_chips) > 1 else 0
-            _ch_html = []
-            for _ci, _c in enumerate(_chips):
-                _cls = "sqg-chat-chip" + (" sqg-chat-chip--on" if _ci == _on_i else "")
-                _ch_html.append(f'<span class="{_cls}">{_c}</span>')
-            st.markdown(
-                '<div class="sqg-chat-ctx">' + "".join(_ch_html) + "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("<p class='sqg-chat-sec'>Connection</p>", unsafe_allow_html=True)
-            _is_conn = bool(st.session_state.get("pg_session_connected"))
-            st.caption("Connected" if _is_conn else "Not connected")
+            if st.button("Go to dashboard", use_container_width=True, key="chat_go_dashboard_btn"):
+                st.switch_page("pages/dashboard.py")
+                st.stop()
             _cc1, _cc2 = st.columns(2)
             with _cc1:
                 if st.button("Clear conversation", key="chat_clear_conversation_btn", use_container_width=True, type="secondary"):
                     st.session_state.chat_history = []
                     st.session_state.suggested_prompts = []
                     st.session_state.prompts_last_query = ""
-                    # Clear per-result paging/chart caches from the current thread.
                     for _k in list(st.session_state.keys()):
                         if _k.startswith("pg_") or _k.startswith("rows_") or _k.startswith("chart_") or _k.startswith("page_sz_"):
                             st.session_state.pop(_k, None)
@@ -2137,7 +2999,7 @@ def run() -> None:
                     st.session_state.chat_change_schema_open = True
                     st.rerun()
             st.markdown("<p class='sqg-chat-sec'>Recent questions</p>", unsafe_allow_html=True)
-            _rc = _chat_recent_user_prompts()
+            _rc_groups = _chat_recent_user_prompt_groups(max_items=250)
             _last_u = ""
             for t in reversed(st.session_state.get("chat_history") or []):
                 if t.get("role") == "user":
@@ -2146,41 +3008,45 @@ def run() -> None:
             # Always keep recent questions inside a fixed-height scroll area so
             # footer controls are not pushed down as history grows.
             try:
-                _recent_parent = st.container(height=250, border=False)
+                _recent_parent = st.container(height=360, border=False)
             except TypeError:
                 _recent_parent = st.container()
             with _recent_parent:
-                for _ri, _txt in enumerate(_rc):
-                    _short = _txt if len(_txt) <= 42 else _txt[:40] + "…"
-                    if st.button(
-                        _short,
-                        key=f"ch_sb_recent_{_ri}",
-                        use_container_width=True,
-                        type="secondary" if _txt != _last_u else "primary",
-                        help=_txt,
-                    ):
-                        st.session_state["pending_prompt"] = _txt
-                        st.rerun()
-            if not _rc:
+                _btn_i = 0
+                for _bucket, _items in _rc_groups:
+                    st.caption(_bucket)
+                    for _txt in _items:
+                        _short = _txt if len(_txt) <= 42 else _txt[:40] + "…"
+                        if st.button(
+                            _short,
+                            key=f"ch_sb_recent_{_btn_i}",
+                            use_container_width=True,
+                            type="secondary" if _txt != _last_u else "primary",
+                            help=_txt,
+                        ):
+                            st.session_state["pending_prompt"] = _txt
+                            st.rerun()
+                        _btn_i += 1
+            if not _rc_groups:
                 st.caption("Your questions will show here after you ask something.")
-            st.markdown("<div class='sqg-chat-footer-fixed'>", unsafe_allow_html=True)
-            _auth = st.session_state.auth_user or {}
-            _u = (_auth.get("username") or "user") or "user"
-            _initial = (str(_u)[:1] or "U").upper()
             st.markdown(
-                f'<div class="sqg-sb-foot">'
-                f'<div class="sqg-sb-foot-row">'
-                f'<span class="sqg-sb-av">{_initial}</span>'
-                f'<span class="sqg-sb-foot-text"><span class="sqg-sb-name">{_u}</span>'
-                f'<span class="sqg-sb-role">Member</span></span></div></div>',
+                """
+                <style>
+                .st-key-signout_chat {
+                  position: sticky;
+                  bottom: 0;
+                  padding-top: 0.45rem;
+                  margin-top: 0.45rem;
+                  background: linear-gradient(180deg, rgba(10,13,33,0.0), rgba(10,13,33,0.9) 40%);
+                }
+                </style>
+                """,
                 unsafe_allow_html=True,
             )
-            if st.button("Sign out", use_container_width=True, key="signout_chat", type="secondary"):
+            if st.button("Logout", use_container_width=True, key="signout_chat", type="secondary"):
                 clear_auth_session()
                 st.switch_page("pages/signin.py")
                 st.stop()
-            st.caption("Clears only this chat thread. Active schema/session stays connected.")
-            st.markdown("</div>", unsafe_allow_html=True)
 
         if st.session_state.get("chat_change_schema_open"):
             @st.dialog("Change schema")
@@ -2272,7 +3138,35 @@ def run() -> None:
     if workbench_page() == "configuration":
         _apply_configuration_ui_redesign_styles()
         with st.sidebar:
-            _render_workbench_sidebar_brand_and_links()
+            _auth = st.session_state.auth_user or {}
+            _uname = str(_auth.get("username", "user") or "user")
+            _init = (html.escape(_uname[:1] or "?")).upper()
+            _display = html.escape(_uname)
+            st.markdown(
+                f"""
+                <div class="sqg-sb-top" style="display:flex;align-items:center;gap:0.5rem">
+                  <span style="display:flex;width:30px;height:30px;border-radius:8px;background:#5b21b6;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12)">
+                    <span style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:center">
+                      <span style="height:2px;width:12px;background:#fff;border-radius:1px"></span>
+                      <span style="height:2px;width:8px;background:#fff;border-radius:1px;opacity:0.95"></span>
+                      <span style="height:2px;width:10px;background:#fff;border-radius:1px;opacity:0.9"></span>
+                    </span>
+                  </span>
+                  <span class="sqg-sb-brand" style="margin:0">Smart Query</span>
+                </div>
+                <div class="sqg-sb-user">
+                  <div class="sqg-sb-av">{_init}</div>
+                  <div>
+                    <div class="sqg-sb-name">{_display}</div>
+                    <div class="sqg-sb-role">Member</div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Go to dashboard", use_container_width=True, key="cfg_go_dashboard_btn"):
+                st.switch_page("pages/dashboard.py")
+                st.stop()
             _p = find_project_by_id(get_active_project_id() or "")
             _pname = (_p or {}).get("name") or "—"
             _pcc = (str(((_p or {}).get("client_code") or ""))).strip()
@@ -2290,28 +3184,6 @@ def run() -> None:
                 ),
                 unsafe_allow_html=True,
             )
-
-            st.markdown('<p class="cfg-sb-sec">Database connection</p>', unsafe_allow_html=True)
-            # Apply pending source/mode switches BEFORE creating radio widgets
-            if st.session_state.pop("_pending_cfg_source_live", False):
-                st.session_state["cfg_schema_source"] = "Connect database (PostgreSQL)"
-            if st.session_state.pop("_pending_upload_mode_new_connection", False):
-                st.session_state["cfg_schema_source"] = "Upload schema JSON"
-                st.session_state["schema_json_upload_mode"] = (
-                    "New connection — PostgreSQL host/user, connect, then upload JSON"
-                )
-
-            _src = st.radio(
-                "Source",
-                ["Connect database (PostgreSQL)", "Upload schema JSON"],
-                horizontal=True,
-                label_visibility="collapsed",
-                key="cfg_schema_source",
-                on_change=_on_configuration_source_changed,
-            )
-            st.session_state.conn_source = "file" if _src.startswith("Upload") else "live"
-            _is_conn_cfg = bool(st.session_state.get("pg_session_connected"))
-            st.caption("Connected" if _is_conn_cfg else "Not connected")
 
             st.divider()
             st.markdown('<p class="cfg-sb-sec">Settings</p>', unsafe_allow_html=True)
@@ -2352,46 +3224,41 @@ def run() -> None:
 
     # ── Main area ─────────────────────────────────────────────────────────────────
     if workbench_page() == "configuration":
-        _cfg_user = (st.session_state.auth_user or {}).get("username", "admin")
-        _cfg_initial = (_cfg_user[:1] if isinstance(_cfg_user, str) and _cfg_user else "U").upper()
+        _render_cfg_notifications()
         _cfg_l, _cfg_r = st.columns([7.0, 2.0], gap="small")
         with _cfg_l:
             st.markdown('<div class="sqg-dash-title"><h1>Configuration</h1></div>', unsafe_allow_html=True)
             st.markdown(
-                '<p class="sqg-dash-sub">Choose <strong>Source</strong> in the left sidebar, then work through the steps in this panel.</p>',
+                '<p class="sqg-dash-sub">Choose your connection type below, then complete setup in this panel.</p>',
                 unsafe_allow_html=True,
             )
-        with _cfg_r:
-            st.markdown('<div class="cfg-user-actions">', unsafe_allow_html=True)
-            _u1, _u2 = st.columns([1.05, 1.05], gap="small")
-            with _u1:
-                st.markdown(
-                    (
-                        '<div class="cfg-user-chip-main">'
-                        f'<span class="cfg-user-chip-ico">{_cfg_initial}</span>'
-                        f'<span class="cfg-user-chip-name">{_cfg_user}</span>'
-                        "</div>"
-                    ),
-                    unsafe_allow_html=True,
+            # Apply pending source/mode switches before rendering the selector.
+            if st.session_state.pop("_pending_cfg_source_live", False):
+                st.session_state["cfg_schema_source"] = "Local DB connection"
+            if st.session_state.pop("_pending_upload_mode_new_connection", False):
+                st.session_state["cfg_schema_source"] = "Remote URL connection"
+                st.session_state["schema_json_upload_mode"] = (
+                    "New connection — PostgreSQL host/user, connect, then upload JSON"
                 )
-            with _u2:
-                _top_chat_ready = _nl_session_ready()
-                _top_chat_blocked = _schema_activation_running_without_pause() if _top_chat_ready else False
-                if _top_chat_ready:
-                    if st.button(
-                        "Go to Chat →",
-                        key="main_go_chat_top_btn",
-                        use_container_width=True,
-                        type="primary",
-                        disabled=_top_chat_blocked,
-                        help="Available when schema activation is finished or paused.",
-                    ):
-                        st.switch_page("pages/project_chat.py")
-                if st.button("Sign out", key="signout_cfg_top_main", use_container_width=True, type="secondary"):
-                    st.session_state.auth_user = None
-                    st.switch_page("pages/signin.py")
-                    st.stop()
-            st.markdown('</div>', unsafe_allow_html=True)
+            if st.session_state.get("cfg_schema_source") not in _cfg_source_options():
+                st.session_state["cfg_schema_source"] = _cfg_source_options()[0]
+            _apply_cfg_source_selection(st.session_state.get("cfg_schema_source") or _cfg_source_options()[0])
+            _is_conn_cfg = bool(st.session_state.get("pg_session_connected"))
+            st.caption("Connection status: Connected" if _is_conn_cfg else "Connection status: Not connected")
+        with _cfg_r:
+            _top_chat_ready = _nl_session_ready()
+            _top_chat_blocked = _schema_activation_running_without_pause() if _top_chat_ready else False
+            if _top_chat_ready:
+                st.markdown("<div style='height:2.1rem'></div>", unsafe_allow_html=True)
+                if st.button(
+                    "Go to Chat →",
+                    key="main_go_chat_top_btn",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=_top_chat_blocked,
+                    help="Available when schema activation is finished or paused.",
+                ):
+                    st.switch_page("pages/project_chat.py")
 
         # Synchronous /schema/from-file: deferred from the sidebar so the bar appears in the main pane.
         _run_pending_sync_schema_from_file()
@@ -2431,15 +3298,13 @@ def run() -> None:
 
             _invite_chat_dialog()
         if st.session_state.pop("schema_chat_nav_blocked", False):
-            st.warning("Chat is unavailable while the schema job is still running.")
+            _cfg_notify("warning", "Chat is unavailable while the schema job is still running.")
         _sync_blocking_chat = _schema_activation_running_without_pause()
         if _nl_session_ready():
             if not _sync_blocking_chat:
-                st.success(
-                    "✅ **Schema is active.** Open the **Chat** page from the **sidebar** (or below)."
-                )
+                _cfg_notify_once("schema_active_ready", "success", "Schema is active. Open the Chat page from the sidebar (or below).")
             else:
-                st.info("Schema activation is still running (use Pause to open Chat on partial data).")
+                _cfg_notify_once("schema_active_running", "warning", "Schema activation is still running (use Pause to open Chat on partial data).")
             if st.button(
                 "Go to Chat →",
                 type="primary",
@@ -2448,7 +3313,7 @@ def run() -> None:
                 help="Available when schema activation is finished or paused.",
             ):
                 st.switch_page("pages/project_chat.py")
-        st.info("Only the tables you activate are used for this session.")
+        _cfg_notify_once("only_activated_tables", "success", "Only the tables you activate are used for this session.")
         st.stop()
     else:
         # Chat: single-column header (no top prompt dropdown)
@@ -2536,6 +3401,13 @@ def run() -> None:
                     st.error(data["error"])
                 else:
                     st.markdown(f"**Explanation:** {data.get('explanation', '')}")
+                    _execution_skipped = bool(data.get("execution_skipped", False))
+                    _exp_text = str(data.get("explanation", "") or "").lower()
+                    if not _execution_skipped:
+                        if "executed on remote sql api" in _exp_text:
+                            st.caption("Execution: Remote API")
+                        else:
+                            st.caption("Execution: PostgreSQL")
     
                     with st.expander("Generated SQL", expanded=False):
                         st.code(data.get("sql", ""), language="sql")
@@ -2812,7 +3684,8 @@ def run() -> None:
     )
     
     if prompt:
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        _ts_now = datetime.now().isoformat(timespec="seconds")
+        st.session_state.chat_history.append({"role": "user", "content": prompt, "created_at": _ts_now})
     
         # Step-by-step progress so the user sees activity while waiting
         _prog   = st.empty()
@@ -2861,7 +3734,7 @@ def run() -> None:
         finally:
             _prog.empty()             # clear the progress bar
     
-        st.session_state.chat_history.append({"role": "assistant", "content": "", "data": data})
+        st.session_state.chat_history.append({"role": "assistant", "content": "", "data": data, "created_at": datetime.now().isoformat(timespec="seconds")})
         st.rerun()
 
 if __name__ == '__main__':
