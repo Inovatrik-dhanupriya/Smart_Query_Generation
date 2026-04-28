@@ -1310,12 +1310,13 @@ def _render_configuration_connection_main(sid: str) -> None:
                 st.markdown(
                     """
                     <style>
+                      .cfg-alert-wrap { position: relative; }
                       .cfg-form-alert {
                         background: #fef2f2;
                         border: 1px solid #fecaca;
                         border-left: 4px solid #ef4444;
                         border-radius: 10px;
-                        padding: 0.6rem 0.75rem;
+                        padding: 0.6rem 2.65rem 0.6rem 0.75rem; /* reserve space for close */
                         color: #991b1b;
                         font-weight: 600;
                         line-height: 1.35;
@@ -1323,34 +1324,46 @@ def _render_configuration_connection_main(sid: str) -> None:
                         display: flex;
                         align-items: center;
                       }
-                      .st-key-dismiss_cfg_form_error { margin-top: 0.05rem !important; }
-                      .st-key-dismiss_cfg_form_error [data-baseweb="button"] {
-                        height: 2.35rem !important;
-                        min-height: 2.35rem !important;
-                        width: 2.35rem !important;
-                        border-radius: 10px !important;
-                        border: 1px solid #fecaca !important;
-                        background: #fff1f2 !important;
+                      /* Make the close button appear inside the alert */
+                      .st-key-dismiss_cfg_form_error {
+                        position: absolute !important;
+                        top: 0.38rem;
+                        right: 0.5rem;
+                        margin: 0 !important;
                         padding: 0 !important;
+                        z-index: 10;
+                      }
+                      .st-key-dismiss_cfg_form_error [data-baseweb="button"] {
+                        height: 1.55rem !important;
+                        min-height: 1.55rem !important;
+                        width: 1.55rem !important;
+                        border-radius: 999px !important;
+                        border: 1px solid #ef4444 !important;
+                        background: #ef4444 !important;
+                        padding: 0 !important;
+                        margin-top: 0.4rem !important; /* vertically center within alert */
+                      }
+                      .st-key-dismiss_cfg_form_error [data-baseweb="button"] * {
+                        color: #ffffff !important;
+                        fill: #ffffff !important;
+                        font-weight: 800 !important;
                       }
                       .st-key-dismiss_cfg_form_error [data-baseweb="button"]:hover {
-                        background: #ffe4e6 !important;
-                        border-color: #fca5a5 !important;
+                        background: #dc2626 !important;
+                        border-color: #dc2626 !important;
                       }
                     </style>
                     """,
                     unsafe_allow_html=True,
                 )
-                e1, e2 = st.columns([20, 1], gap="small", vertical_alignment="center")
-                with e1:
-                    st.markdown(
-                        f"<div class='cfg-form-alert'>{html.escape(msg)}</div>",
-                        unsafe_allow_html=True,
-                    )
-                with e2:
-                    if st.button("✕", key="dismiss_cfg_form_error", help="Dismiss"):
-                        st.session_state["cfg_form_error"] = ""
-                        st.rerun()
+                st.markdown(
+                    f"<div class='cfg-alert-wrap'><div class='cfg-form-alert'>{html.escape(msg)}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                # Render the close button after the alert; CSS positions it inside `.cfg-alert-wrap`.
+                if st.button("✕", key="dismiss_cfg_form_error", help="Dismiss"):
+                    st.session_state["cfg_form_error"] = ""
+                    st.rerun()
 
         def _fail(msg: str) -> None:
             # Do not rerun for validation errors.
